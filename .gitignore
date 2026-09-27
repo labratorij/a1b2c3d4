@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+weights/
+*.pth
+outputs/
+data/*.sqlite
+*.npy

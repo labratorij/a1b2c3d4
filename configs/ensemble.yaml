@@ -1,0 +1,28 @@
+# Итоговая модель сервиса: ансамбль двух моделей.
+#   bestv10_512 - R101-IBN + 3 PCB-полосы + GeM, вход 512px
+#   r101_ibn_256 - R101-IBN, вход 256px
+# Эмбеддинг = L2-конкатенация членов (2 x 2816 = 5632-d), см. reid/model_loader.py.
+# Метрики по эталонному протоколу: mAP@10 0.894, Rank-1 0.843, F1 0.598.
+# Порядок членов важен: первый задаёт размер батча (512), остальные ресайзятся вниз.
+data:
+  root: "../../Датасет"
+  images_dir: "images"
+  query_csv: "test_query.csv"
+  gallery_csv: "test_gallery.csv"
+  train_csv: "train.csv"
+  bbox_margin: 0.10
+
+infer:
+  ensemble:
+    - {name: bestv10_512,  config: "configs/member_bestv10_512.yaml",  checkpoint: "weights/bestv10_512.pth"}
+    - {name: r101_ibn_256, config: "configs/member_r101_ibn_256.yaml", checkpoint: "weights/r101_ibn_256.pth"}
+  batch_size: 12                # вход 512px у первого члена - батч меньше
+  flip_tta: true
+  top_k: 10
+  use_reranking: true
+  rerank_k1: 10                 # подобрано на репетиции (EXPERIMENTS.md §6)
+  rerank_k2: 3
+  rerank_lambda: 0.5
+  candidate_threshold: 0.30     # порог режима отказа (EXPERIMENTS.md §7.2)
+  output_dir: "data/outputs"
+  num_workers: 4

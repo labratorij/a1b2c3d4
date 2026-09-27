@@ -1,0 +1,59 @@
+# v5-r101 = рецепт v2 на ResNet101-IBN-a (официальные ImageNet-веса IBN-Net) - разнообразие
+# архитектур для ансамбля. 288px не влезает в 8 GB даже с checkpointing (6.5 GB, своп),
+# поэтому вход 256x256 (5.15 GB, ~630 мс/итер при batch 64); в ансамбле размер входа
+# адаптируется автоматически (EnsembleWrapper).
+data:
+  root: "../../Датасет"
+  images_dir: "images"
+  train_csv: "train.csv"
+  query_csv: "test_query.csv"
+  gallery_csv: "test_gallery.csv"
+  bbox_margin: 0.10
+  image_size: [256, 256]        # 288 для R101 не влезает в 8 GB
+  val_ids_fraction: 0.10
+  seed: 42
+
+model:
+  backbone: "resnet101_ibn_a"   # resnet50_ibn_a | resnet101_ibn_a | resnet50 | timm:<name>
+  pretrained: true              # официальные ImageNet-веса IBN-Net (fallback - torchvision resnet50)
+  last_stride: 1                # Bag of Tricks: карта признаков 16x16 при 256px
+  grad_checkpoint: true         # обязателен для R101 на 8 GB
+  pooling: "gem"                # gem | avg  (GeM: обучаемая степень p, старт p=3)
+  num_parts: 3                  # PCB-полосы; с last_stride=1 полосы по 6 строк вместо 3/3/2
+  part_dim: 256
+
+sampler:
+  num_ids_per_batch: 16
+  num_imgs_per_id: 4
+
+train:
+  epochs: 120
+  warmup_epochs: 10
+  scheduler: "cosine"           # cosine | step; для step нужны lr_milestones/lr_gamma ниже
+  min_lr_factor: 0.01           # cosine: LR на последней эпохе = base_lr * min_lr_factor
+  base_lr: 0.00035
+  weight_decay: 0.0005
+  label_smoothing: 0.1
+  triplet_margin: 0.3
+  id_loss_weight: 1.0
+  triplet_loss_weight: 1.0
+  part_loss_weight: 1.0
+  lr_milestones: [40, 70, 100]  # не используются при scheduler: cosine
+  lr_gamma: 0.1
+  log_interval: 20
+  eval_interval: 10
+  checkpoint_dir: "outputs/checkpoints_v5_r101"
+  num_workers: 4
+
+infer:
+  checkpoint: "weights/r101_ibn_256.pth"
+  batch_size: 64
+  flip_tta: true                # усреднение эмбеддинга оригинала и зеркала (x2 forward на инференсе)
+  top_k: 10
+  use_reranking: true
+  rerank_k1: 20
+  rerank_k2: 6
+  rerank_lambda: 0.3
+  candidate_threshold: 0.45      # eval_enroll.py --split unseen --sweep: оптимум R101 (у R50-моделей 0.375-0.40)
+  output_dir: "outputs/submission_v5_r101"
+  num_workers: 4

@@ -1,0 +1,5 @@
+# тонкий клиент: только HTTP к backend, модель не загружает
+streamlit>=1.38
+requests>=2.32
+pandas>=2.2
+Pillow>=10.2

@@ -1,0 +1,33 @@
+# Чужой чекпоинт weights/bestv10_512.pth. Архитектура опознана по state_dict
+# (scratchpad/inspect_ckpts.py), вход и last_stride подобраны сканом: их в чекпоинте нет.
+data:
+  root: "../../Датасет"
+  images_dir: "images"
+  query_csv: "test_query.csv"
+  gallery_csv: "test_gallery.csv"
+  train_csv: "train.csv"
+  bbox_margin: 0.10
+  image_size: [512, 512]
+  val_ids_fraction: 0.10
+  seed: 42
+
+model:
+  backbone: "resnet101_ibn_a"
+  pretrained: false             # веса целиком из чекпоинта
+  last_stride: 1
+  pooling: "gem"
+  num_parts: 3
+  part_dim: 256
+
+infer:
+  checkpoint: "weights/bestv10_512.pth"
+  batch_size: 12
+  flip_tta: true
+  top_k: 10
+  use_reranking: true
+  rerank_k1: 10
+  rerank_k2: 3
+  rerank_lambda: 0.5
+  candidate_threshold: 0.25
+  output_dir: "outputs/submission_ext_bestv10_512"
+  num_workers: 3

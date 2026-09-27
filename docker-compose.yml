@@ -1,0 +1,72 @@
+# Запуск всего решения одной командой:  docker compose up --build
+#
+# Микросервисная архитектура (ТЗ §6): три независимых компонента —
+#   db  — PostgreSQL с расширением pgvector: эмбеддинги и метаданные галереи
+#   api — backend инференса на FastAPI, спецификация OpenAPI на /docs
+#   ui  — тонкий клиент (Streamlit), обращается к api только по HTTP
+#
+# Контекст сборки api — сам каталог service/ (он самодостаточен: reid/, configs/, weights/).
+# Контекст сборки ui — корень решения: интерфейсу нужны EXPERIMENTS.md и графики docs/.
+name: vehicle-reid
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: reid
+      POSTGRES_PASSWORD: reid
+      POSTGRES_DB: reid
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reid -d reid"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      DATABASE_URL: postgresql://reid:reid@db:5432/reid
+      MODEL_CONFIG: configs/ensemble.yaml
+      PCA_DIM: "256"                 # размерность хранения; 0 = полный эмбеддинг
+      DEFAULT_THRESHOLD: "0.30"      # порог режима отказа, обоснование в EXPERIMENTS.md §7.2
+      DATA_ROOT: /data/dataset
+      OUTPUT_DIR: /service/data/outputs
+    volumes:
+      - ../../Датасет:/data/dataset:ro   # набор данных только на чтение
+      - api_data:/service/data           # база галереи и артефакты: переживают пересоздание контейнера
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  ui:
+    build:
+      context: ..
+      dockerfile: service/Dockerfile.ui
+    environment:
+      API_URL: http://api:8000
+      UI_DATA_ROOT: /data/dataset
+      UI_IMAGES_DIR: /data/dataset/images
+    volumes:
+      - ../../Датасет:/data/dataset:ro
+      - api_data:/service/data:ro
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+
+volumes:
+  db_data:
+  api_data:
