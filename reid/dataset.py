@@ -9,7 +9,6 @@ from torch.utils.data import Dataset
 
 
 def _crop_coords(img_size, x, y, w, h, margin: float):
-    """Координаты кропа с полем вокруг рамки; None, если рамка деградировала."""
     img_w, img_h = img_size
     mx, my = w * margin, h * margin
     x0, y0 = max(0, int(x - mx)), max(0, int(y - my))
@@ -23,11 +22,6 @@ def _crop_bbox(image: Image.Image, x, y, w, h, margin: float) -> Image.Image:
 
 
 class MaskStore:
-    """Маски ТС из precompute_masks.py (RLE по полному кадру).
-
-    Хранятся по полному кадру, потому что кроп делается с полем и случайным сдвигом:
-    маску нужно резать теми же координатами, что и изображение.
-    """
 
     def __init__(self, path: str):
         d = np.load(path)
@@ -45,11 +39,6 @@ class MaskStore:
         return self._expand(runs, 0, shape[0] * shape[1]).reshape(shape)
 
     def crop(self, image_id, x0: int, y0: int, x1: int, y1: int) -> Optional[np.ndarray]:
-        """Маска в координатах кропа, без разворачивания всего кадра.
-
-        RLE идёт по строкам, поэтому нужные строки достаются напрямую: на 1080p это
-        вдвое дешевле полного декода, а загрузчик здесь - узкое место.
-        """
         r = self._runs(image_id)
         if r is None:
             return None
@@ -68,35 +57,22 @@ class MaskStore:
 
     @staticmethod
     def _expand(runs: np.ndarray, start: int, stop: int) -> np.ndarray:
-        """Развернуть RLE только на полуинтервале [start, stop) плоского индекса."""
         ends = np.cumsum(runs, dtype=np.int64)
         first = int(np.searchsorted(ends, start, side="right"))
         last = int(np.searchsorted(ends, stop, side="left"))
         part = runs[first:last + 1].copy()
         if part.size == 0:
             return np.zeros(stop - start, dtype=bool)
-        # обрезаем крайние серии по границам интервала
         part[0] -= start - (ends[first - 1] if first else 0)
         part[-1] -= max(0, int(ends[min(last, len(runs) - 1)]) - stop)
-        # серии чередуются начиная с нулей, поэтому значение серии j равно j % 2
         values = np.resize([first % 2, 1 - first % 2], part.size).astype(np.uint8)
         return np.repeat(values, np.clip(part, 0, None)).astype(bool)
 
 
 def apply_mask(crop: Image.Image, mask_crop: Optional[np.ndarray], mode: str,
                fill=(124, 116, 104)) -> Image.Image:
-    """Подавление фона в кропе.
-
-    hard   - фон заливается ровным цветом: максимальный эффект, но резкая граница
-             сама по себе становится признаком
-    soft   - фон затемняется, контекст (тени, положение на полосе) частично остаётся
-    random - вариант для обучения: фон случайно заливается, зашумляется или остаётся
-             как есть. Модель учится не опираться на фон, а на инференсе сегментация
-             не нужна вовсе - задержка не растёт
-    """
     if mask_crop is None or mode == "none":
         return crop
-    # ветку "как есть" решаем до декодирования маски: она достаётся бесплатно
     if mode == "random":
         choice = random.random()
         if choice < 0.35:
@@ -108,8 +84,6 @@ def apply_mask(crop: Image.Image, mask_crop: Optional[np.ndarray], mode: str,
     if not bg_idx.any() or mask_crop.sum() == 0:
         return crop
 
-    # правка только по пикселям фона и в uint8: по всему кропу во float32 это
-    # втрое дороже, а загрузчик и без масок близок к пределу
     arr = np.array(crop, dtype=np.uint8)
     n = int(bg_idx.sum())
     if mode == "random":
@@ -123,12 +97,6 @@ def apply_mask(crop: Image.Image, mask_crop: Optional[np.ndarray], mode: str,
 
 
 def _jitter_bbox(x, y, w, h, jitter: float):
-    """Случайный сдвиг центра и масштаб рамки в пределах +-jitter (доля от w/h).
-
-    Имитирует разброс детектора: на тесте рамки приходят не от той же разметки,
-    что в train.csv, и модель, привыкшая к идеально центрированному кропу с полем
-    ровно bbox_margin, теряет на сдвинутых/поджатых рамках.
-    """
     dx = random.uniform(-jitter, jitter) * w
     dy = random.uniform(-jitter, jitter) * h
     sw = 1.0 + random.uniform(-jitter, jitter)
@@ -148,7 +116,6 @@ def _crop_with_mask(image, image_id, x, y, w, h, margin, masks, mask_mode):
 
 
 class VehicleReIDTrainDataset(Dataset):
-    """Train-датасет: кроп по bbox + vehicle_id -> contiguous label."""
 
     def __init__(self, df: pd.DataFrame, images_dir: str, label_map: dict,
                  bbox_margin: float = 0.1, transform=None, bbox_jitter: float = 0.0,
@@ -158,7 +125,7 @@ class VehicleReIDTrainDataset(Dataset):
         self.label_map = label_map
         self.bbox_margin = bbox_margin
         self.transform = transform
-        self.bbox_jitter = bbox_jitter   # 0 = рамка строго из train.csv (поведение по умолчанию)
+        self.bbox_jitter = bbox_jitter
         self.masks = masks
         self.mask_mode = mask_mode
 
@@ -182,7 +149,6 @@ class VehicleReIDTrainDataset(Dataset):
 
 
 class VehicleReIDTestDataset(Dataset):
-    """Test-датасет (query/gallery): кроп по bbox, без меток."""
 
     def __init__(self, df: pd.DataFrame, images_dir: str, bbox_margin: float = 0.1, transform=None,
                  masks: "MaskStore" = None, mask_mode: str = "none"):
@@ -213,14 +179,11 @@ def build_label_map(df: pd.DataFrame) -> dict:
 
 
 def build_camera_map(df: pd.DataFrame) -> dict:
-    """camera_id -> contiguous index, для SIE (side information embedding) в TransReID."""
     unique_cams = sorted(df.camera_id.unique().tolist())
     return {cid: i for i, cid in enumerate(unique_cams)}
 
 
 def split_train_val_ids(df: pd.DataFrame, val_fraction: float, seed: int):
-    """Отделяет часть vehicle_id целиком под внутреннюю валидацию (open-set,
-    как в тестовом протоколе: id в train/val не пересекаются)."""
     rng = np.random.RandomState(seed)
     unique_ids = df.vehicle_id.unique()
     rng.shuffle(unique_ids)
@@ -234,8 +197,6 @@ def split_train_val_ids(df: pd.DataFrame, val_fraction: float, seed: int):
 
 
 def make_val_query_gallery(val_df: pd.DataFrame, seed: int):
-    """Из отложенных id формирует внутренние query/gallery для расчёта CMC/mAP:
-    по одному случайному изображению каждого id - в query, остальные - в gallery."""
     rng = np.random.RandomState(seed)
     query_rows, gallery_rows = [], []
     for vid, group in val_df.groupby("vehicle_id"):

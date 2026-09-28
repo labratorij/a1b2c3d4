@@ -1,28 +1,3 @@
-"""ResNet-IBN-a backbone.
-
-Реализация Instance-Batch Normalization ResNet (вариант 'a') по:
-Pan et al., "Two at Once: Enhancing Learning and Generalization
-Capacities via IBN-Net", ECCV 2018.
-
-IBN-слой заменяет обычный BatchNorm после первого 1x1-conv в каждом
-bottleneck-блоке stage1-stage3 (stage4 не трогаем): первая половина
-каналов нормализуется InstanceNorm (устойчивость к изменению внешнего
-вида/освещения/цветокоррекции камеры), вторая половина - обычным
-BatchNorm (сохраняет дискриминативную информацию).
-
-Претрейн (pretrained=True):
-  1. в первую очередь - официальные ImageNet-веса IBN-Net (XingangPan/IBN-Net,
-     github releases), у них та же схема имён слоёв (bn1.IN / bn1.BN), поэтому
-     грузятся напрямую, IN-часть тоже предобучена;
-  2. fallback (нет сети/файла) - веса torchvision resnet50: конволюции/bn2/bn3/
-     downsample берутся как есть, BN-часть IBN-слоя инициализируется
-     соответствующей половиной каналов исходного BatchNorm, IN-часть остаётся
-     в состоянии по умолчанию. Только для resnet50.
-
-last_stride=1 (Bag of Tricks, Luo et al. 2019): убирается даунсемпл в layer4,
-карта признаков при входе 256x256 становится 16x16 вместо 8x8 - больше
-пространственного разрешения для GAP/GeM и особенно для PCB-полос.
-"""
 import logging
 
 import torch
@@ -33,7 +8,6 @@ from torchvision.models import resnet50, ResNet50_Weights
 
 logger = logging.getLogger("reid")
 
-# Официальные ImageNet-претрейны IBN-Net (Pan et al.), см. hubconf в XingangPan/IBN-Net.
 IBN_MODEL_URLS = {
     "resnet50_ibn_a": "https://github.com/XingangPan/IBN-Net/releases/download/v1.0/resnet50_ibn_a-d9d0bb7b.pth",
     "resnet101_ibn_a": "https://github.com/XingangPan/IBN-Net/releases/download/v1.0/resnet101_ibn_a-59ea0ac6.pth",
@@ -95,9 +69,6 @@ class ResNetIBN(nn.Module):
         self.layer4 = self._make_layer(512, layers[3], stride=last_stride, use_ibn=False)
 
         self.out_channels = 512 * BottleneckIBN.expansion
-        # activation checkpointing (torch.utils.checkpoint): активации layer3/layer4
-        # не хранятся, а пересчитываются на backward - экономит ~40% VRAM ценой
-        # ~25-30% времени; включается через model.grad_checkpoint в конфиге (только train-режим)
         self.grad_checkpoint = False
 
     def _make_layer(self, planes, blocks, stride, use_ibn):
@@ -129,7 +100,6 @@ class ResNetIBN(nn.Module):
 
 
 def _load_official_ibn(model: ResNetIBN, arch: str) -> bool:
-    """Официальные веса IBN-Net; False, если скачать/прочитать не удалось."""
     try:
         src = load_state_dict_from_url(IBN_MODEL_URLS[arch], progress=True, map_location="cpu")
     except Exception as e:  # noqa: BLE001 - любой сбой сети/файла -> fallback на torchvision
@@ -151,11 +121,10 @@ def _load_pretrained_from_torchvision(model: ResNetIBN) -> None:
         if key in src and dst[key].shape == src[key].shape:
             dst[key] = src[key]
             continue
-        # IBN bn1.{IN,BN}.* not present in plain resnet50 -> map BN half from bn1.*
         if ".bn1.BN." in key:
             src_key = key.replace(".bn1.BN.", ".bn1.")
             if src_key in src:
-                if dst[key].dim() == 0:  # num_batches_tracked - скаляр, без канального среза
+                if dst[key].dim() == 0:
                     dst[key] = src[src_key].clone()
                 else:
                     half = dst[key].shape[0]

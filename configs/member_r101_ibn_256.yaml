@@ -3,7 +3,7 @@
 # поэтому вход 256x256 (5.15 GB, ~630 мс/итер при batch 64); в ансамбле размер входа
 # адаптируется автоматически (EnsembleWrapper).
 data:
-  root: "../../Датасет"
+  root: "data/dataset"
   images_dir: "images"
   train_csv: "train.csv"
   query_csv: "test_query.csv"
@@ -15,7 +15,7 @@ data:
 
 model:
   backbone: "resnet101_ibn_a"   # resnet50_ibn_a | resnet101_ibn_a | resnet50 | timm:<name>
-  pretrained: true              # официальные ImageNet-веса IBN-Net (fallback - torchvision resnet50)
+  pretrained: false             # веса целиком из чекпоинта: сервис не обращается в сеть
   last_stride: 1                # Bag of Tricks: карта признаков 16x16 при 256px
   grad_checkpoint: true         # обязателен для R101 на 8 GB
   pooling: "gem"                # gem | avg  (GeM: обучаемая степень p, старт p=3)

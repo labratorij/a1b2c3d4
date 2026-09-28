@@ -1,4 +1,3 @@
-"""Страница: журнал экспериментов (рендер EXPERIMENTS.md вместе с графиками)."""
 import base64
 import os
 import re
@@ -7,12 +6,8 @@ import streamlit as st
 
 from common import SERVICE_DIR, sidebar_status
 
-# журнал лежит в корне решения; в образе его копируют внутрь сервиса
-DOC = os.environ.get("EXPERIMENTS_MD") or next(
-    (p for p in (os.path.join(SERVICE_DIR, "EXPERIMENTS.md"),
-                 os.path.join(SERVICE_DIR, "..", "EXPERIMENTS.md")) if os.path.exists(p)),
-    os.path.join(SERVICE_DIR, "EXPERIMENTS.md"))
-DOC_ROOT = os.path.dirname(os.path.abspath(DOC))            # относительные пути графиков
+DOC = os.environ.get("EXPERIMENTS_MD") or os.path.join(SERVICE_DIR, "EXPERIMENTS.md")
+DOC_ROOT = os.path.dirname(os.path.abspath(DOC))
 
 st.title("Журнал экспериментов")
 st.caption("Все проверенные подходы, их результаты и выводы — включая отрицательные, "
@@ -35,8 +30,6 @@ IMG = re.compile(r"^!\[(?P<alt>[^\]]*)\]\((?P<src>[^)]+)\)\s*$")
 
 
 def render_svg(path: str, alt: str) -> None:
-    """Streamlit не умеет st.image для SVG - встраиваем как data-URI.
-    Графики содержат медиа-запрос prefers-color-scheme, поэтому подхватывают тему браузера."""
     with open(path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode()
     st.markdown(f'<img src="data:image/svg+xml;base64,{b64}" alt="{alt}" '

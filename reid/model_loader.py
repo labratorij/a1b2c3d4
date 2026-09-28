@@ -1,22 +1,3 @@
-"""Загрузка любой обученной модели проекта по (конфиг, чекпоинт) в единый интерфейс
-для инференса: ReID-модели ResNet-семейства (train.py), TransReID (train_transreid.py)
-и ансамбль нескольких моделей (infer.ensemble в конфиге).
-
-    wrapper = load_reid_model(cfg, ckpt_path, device)
-    feat = wrapper(images)          # (B, D) эмбеддинг, eval-режим
-    wrapper.image_size, wrapper.input_mean, wrapper.input_std, wrapper.label_map, wrapper.meta
-
-Ансамбль (configs/config_ensemble.yaml):
-    infer:
-      ensemble:
-        - {config: configs/config_v2.yaml,      checkpoint: outputs/checkpoints_v2/best.pth}
-        - {config: configs/config_v4_veri.yaml, checkpoint: outputs/checkpoints_v4_veri/best.pth}
-        - ...
-Эмбеддинг ансамбля = конкатенация L2-нормированных эмбеддингов членов (косинус
-конкатенации = среднее косинусов членов). Батч подаётся один - в размере и
-нормализации первого члена; для остальных тензор при необходимости
-перенормируется и ресайзится внутри (члены могут иметь разный вход, напр. CLIP).
-"""
 import os
 
 import torch
@@ -44,7 +25,7 @@ class ReIDWrapper(nn.Module):
         self.input_mean = tuple(input_mean)
         self.input_std = tuple(input_std)
         self.label_map = label_map
-        self.meta = meta  # epoch / metrics из чекпоинта
+        self.meta = meta
 
     def forward(self, x):
         return self._forward_fn(x)
@@ -60,7 +41,7 @@ class EnsembleWrapper(nn.Module):
         self.input_mean = first.input_mean
         self.input_std = first.input_std
         self.label_map = {}
-        for m in members:  # объединение: id, виденный хотя бы одним членом, считается виденным ансамблем
+        for m in members:
             self.label_map.update(m.label_map)
         self.meta = {"members": {n: m.meta for n, m in zip(names, members)}}
         self.out_dim = sum(getattr(m.model, "out_dim", 0) for m in members)
@@ -86,8 +67,6 @@ def _resolve(path: str, base_dir: str) -> str:
 
 
 def load_reid_model(cfg: dict, ckpt_path, device: torch.device, base_dir: str = None):
-    # база для относительных путей в конфиге (конфиги членов, файлы весов).
-    # По умолчанию - каталог, содержащий пакет reid (т.е. service/).
     base_dir = base_dir or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     family = cfg_family(cfg)
 
@@ -102,8 +81,6 @@ def load_reid_model(cfg: dict, ckpt_path, device: torch.device, base_dir: str = 
 
     ckpt = load_checkpoint(ckpt_path, map_location=device)
     if "label_map" not in ckpt:
-        # чужой чекпоинт без label_map (напр. обученный другим скриптом): число классов
-        # берём из формы классификатора, сами id нам на инференсе не нужны
         sd = ckpt.get("model", ckpt)
         clf = next((v for k, v in sd.items() if k.endswith("classifier.weight")), None)
         if clf is None:
@@ -121,7 +98,7 @@ def load_reid_model(cfg: dict, ckpt_path, device: torch.device, base_dir: str = 
 
     from .transreid_model import build_transreid_model
     model_cfg = dict(cfg["model"])
-    model_cfg["pretrained"] = False  # веса целиком из чекпоинта, ImageNet-претрейн ViT не нужен
+    model_cfg["pretrained"] = False
     model, _, _ = build_transreid_model(len(label_map), 0, model_cfg,
                                         os.path.join(base_dir, "pretrained_cache", "transreid"))
     model.load_state_dict(ckpt["model"])

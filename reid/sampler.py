@@ -7,9 +7,6 @@ from torch.utils.data import Sampler
 
 
 class PKSampler(Sampler):
-    """Батч из P identities x K images. Внутри identity изображения с разных
-    camera_id предпочитаются перед повтором одной и той же камеры - это
-    поощряет модель учиться на кросс-камерных парах."""
 
     def __init__(self, dataset, num_ids_per_batch: int, num_imgs_per_id: int):
         self.num_ids_per_batch = num_ids_per_batch
@@ -31,7 +28,6 @@ class PKSampler(Sampler):
         cameras = self.id_to_cameras[pid]
         k = self.num_imgs_per_id
         if len(indices) >= k:
-            # группируем по камере и берём round-robin, чтобы максимизировать разнообразие камер
             by_cam = defaultdict(list)
             for i, cam in zip(indices, cameras):
                 by_cam[cam].append(i)
@@ -48,7 +44,7 @@ class PKSampler(Sampler):
                 ci += 1
                 if all(len(v) == 0 for v in by_cam.values()):
                     break
-            while len(picked) < k:  # добор с повтором, если камер/картинок не хватило
+            while len(picked) < k:
                 picked.append(random.choice(indices))
             return picked
         return list(np.random.choice(indices, size=k, replace=True))

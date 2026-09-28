@@ -1,8 +1,3 @@
-"""Инференс: загрузка модели и извлечение эмбеддингов.
-
-Использует пакет `reid` внутри сервиса - тот же код, которым модель обучалась
-(`reid/model_loader.py`, `reid/features.py`, `reid/transforms.py`, `reid/dataset.py`).
-"""
 import io
 import os
 import sys
@@ -16,7 +11,6 @@ from PIL import Image
 
 from . import settings
 
-# пакет модели лежит рядом (service/reid): сервис самодостаточен
 if settings.SERVICE_DIR not in sys.path:
     sys.path.insert(0, settings.SERVICE_DIR)
 os.environ.setdefault("TORCH_HOME", settings.TORCH_CACHE)
@@ -31,7 +25,6 @@ from reid.transforms import build_test_transforms       # noqa: E402
 
 
 class Engine:
-    """Модель + препроцессинг. Потокобезопасен: forward под замком (одна GPU)."""
 
     def __init__(self, config_path: str = None, device: str = None):
         cfg_rel = config_path or settings.MODEL_CONFIG
@@ -49,7 +42,7 @@ class Engine:
         self.config_path = cfg_rel
         self.members = list(getattr(self.model, "names", []))
         self._lock = threading.Lock()
-        self._gradcam = None                   # создаётся при первом запросе объяснения
+        self._gradcam = None
 
     def describe(self) -> dict:
         return {
@@ -63,7 +56,6 @@ class Engine:
         }
 
     def prepare(self, image: Image.Image, bbox: Optional[Sequence[float]]) -> torch.Tensor:
-        """Кроп по bbox (если задан) -> тензор. bbox = (x, y, w, h) в пикселях кадра."""
         if bbox is not None:
             x, y, w, h = bbox
             image = _crop_bbox(image.convert("RGB"), x, y, w, h, self.bbox_margin)
@@ -82,7 +74,6 @@ class Engine:
 
     @torch.no_grad()
     def embed_tensors(self, tensors: List[torch.Tensor], batch_size: int = None) -> np.ndarray:
-        """L2-нормированные эмбеддинги для списка подготовленных тензоров."""
         if not tensors:
             return np.zeros((0, 1), dtype=np.float32)
         bs = batch_size or int(self.cfg["infer"].get("batch_size", 16))
@@ -103,7 +94,6 @@ class Engine:
 
     def embed_paths(self, paths: Sequence[str], bboxes: Sequence[Optional[Sequence[float]]],
                     batch_size: int = None, progress=None) -> Tuple[np.ndarray, List[int]]:
-        """Эмбеддинги файлов с диска. Возвращает (признаки, индексы успешно прочитанных)."""
         bs = batch_size or int(self.cfg["infer"].get("batch_size", 16))
         feats, ok = [], []
         buf, buf_idx = [], []
@@ -139,12 +129,6 @@ class Engine:
         return crop, self.transform(crop).unsqueeze(0).to(self.device)
 
     def explain_pair(self, query: Image.Image, query_bbox, reference: Image.Image, reference_bbox):
-        """Grad-CAM для ОБОИХ снимков пары.
-
-        Сходство симметрично: карту запроса строим относительно эмбеддинга кандидата,
-        карту кандидата - относительно эмбеддинга запроса. Так видно, совпадают ли
-        области, по которым модель приняла решение.
-        """
         cam_engine = self._cam_engine()
         q_crop, q_x = self._crop_and_tensor(query, query_bbox)
         r_crop, r_x = self._crop_and_tensor(reference, reference_bbox)
@@ -164,15 +148,10 @@ class Engine:
 
     def explain(self, image: Image.Image, bbox, reference: np.ndarray,
                 mode: str = "side_by_side"):
-        """Grad-CAM: какие области запроса дали сходство с эталонным эмбеддингом.
-
-        reference - ПОЛНЫЙ эмбеддинг кандидата (не сокращённый PCA): карта строится
-        в пространстве модели, а не хранилища. Возвращает (изображение, статистика).
-        """
         self._cam_engine()
         crop, x = self._crop_and_tensor(image, bbox)
         ref = torch.as_tensor(np.asarray(reference, dtype=np.float32)).reshape(1, -1)
-        with self._lock:                       # backward тоже держим под замком: одна GPU
+        with self._lock:
             cam, used = self._gradcam.cam(x, ref, out_size=tuple(self.model.image_size))
         stats = self._gradcam.focus_stats(cam, crop.size[::-1])
         stats["members_used"] = used
@@ -181,11 +160,6 @@ class Engine:
         return picture, stats
 
     def rerank(self, q_feat: np.ndarray, g_feat: np.ndarray) -> np.ndarray:
-        """k-reciprocal re-ranking: матрица сходств (n_query, n_gallery).
-
-        ВНИМАНИЕ: имеет смысл только на пакете запросов - его выигрыш берётся из связей
-        между запросами (EXPERIMENTS.md §9.1). Для одиночного запроса не применять.
-        """
         inf = self.cfg["infer"]
         dist = re_ranking(q_feat, g_feat, inf["rerank_k1"], inf["rerank_k2"], inf["rerank_lambda"])
         return 1.0 - dist
@@ -196,7 +170,6 @@ _engine_lock = threading.Lock()
 
 
 def get_engine() -> Engine:
-    """Ленивая одиночная загрузка модели (первый запрос прогревает сервис)."""
     global _engine
     if _engine is None:
         with _engine_lock:

@@ -36,8 +36,10 @@ services:
       DATA_ROOT: /data/dataset
       OUTPUT_DIR: /service/data/outputs
     volumes:
-      - ../../Датасет:/data/dataset:ro   # набор данных только на чтение
-      - api_data:/service/data           # база галереи и артефакты: переживают пересоздание контейнера
+      # Каталог с данными: по умолчанию service/data/dataset, то есть внутри сервиса.
+      # Свой набор подключается без правки файла:  HOST_DATA=D:/Датасет docker compose up
+      - ${HOST_DATA:-./data/dataset}:/data/dataset:ro
+      - api_data:/service/data           # база галереи, загрузки и артефакты: переживают пересоздание контейнера
     ports:
       - "8000:8000"
     depends_on:
@@ -53,14 +55,14 @@ services:
 
   ui:
     build:
-      context: ..
-      dockerfile: service/Dockerfile.ui
+      context: .
+      dockerfile: Dockerfile.ui
     environment:
       API_URL: http://api:8000
       UI_DATA_ROOT: /data/dataset
       UI_IMAGES_DIR: /data/dataset/images
     volumes:
-      - ../../Датасет:/data/dataset:ro
+      - ${HOST_DATA:-./data/dataset}:/data/dataset:ro
       - api_data:/service/data:ro
     ports:
       - "8501:8501"

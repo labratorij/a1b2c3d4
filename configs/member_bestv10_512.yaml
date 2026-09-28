@@ -1,7 +1,7 @@
 # Чужой чекпоинт weights/bestv10_512.pth. Архитектура опознана по state_dict
 # (scratchpad/inspect_ckpts.py), вход и last_stride подобраны сканом: их в чекпоинте нет.
 data:
-  root: "../../Датасет"
+  root: "data/dataset"
   images_dir: "images"
   query_csv: "test_query.csv"
   gallery_csv: "test_gallery.csv"

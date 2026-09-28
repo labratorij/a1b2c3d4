@@ -1,4 +1,3 @@
-"""Схемы запросов и ответов. Из них FastAPI строит спецификацию OpenAPI (/openapi.json)."""
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -47,9 +46,50 @@ class GalleryUpsertResponse(BaseModel):
     items: List[GalleryItemResult] = []
 
 
+class CsvInfo(BaseModel):
+    name: str
+    path: str
+    role: str = Field(description="query | gallery | train | other — по имени файла")
+    inferred_role: bool = Field(False, description="Роль выведена не из имени, а из состава каталога: "
+                                                   "когда годных CSV ровно два и опознан один, "
+                                                   "второй получает парную роль")
+    rows: Optional[int] = None
+    has_vehicle_id: bool = Field(description="Есть ли разметка ТС: без неё галерея наполняется без vehicle_id")
+    usable: bool = Field(description="Читается и содержит колонки image_id,x,y,w,h")
+    problem: Optional[str] = None
+
+
+class DatasetInspectResponse(BaseModel):
+    root: str
+    images_dir: Optional[str] = Field(None, description="Найденный каталог с изображениями")
+    images: int = Field(description="Сколько файлов изображений в нём лежит")
+    csvs: List[CsvInfo] = Field(description="Все CSV каталога с их ролями")
+    suggested: dict = Field(description="Что будет взято по умолчанию: query_csv, gallery_csv, bulk_csv")
+    problems: List[str] = Field(description="Почему каталог непригоден; пустой список — всё в порядке")
+
+
+class UploadResponse(BaseModel):
+    name: str = Field(description="Имя рабочего каталога; его же передают как data_dir")
+    data_dir: str = Field(description="Путь на стороне сервиса, готовый для /gallery/bulk и /jobs/batch")
+    received: int = Field(description="Сколько файлов принято")
+    skipped: List[str] = Field(description="Что отклонено и почему: не изображение и не CSV")
+    dataset: DatasetInspectResponse = Field(description="Разбор каталога после загрузки")
+
+
+class WorkspaceInfo(BaseModel):
+    name: str
+    path: str
+    images: int
+    csvs: int
+
+
 class GalleryBulkRequest(BaseModel):
-    csv_path: str = Field(description="CSV с колонками image_id,x,y,w,h[,vehicle_id]; путь на стороне сервиса")
-    images_dir: Optional[str] = Field(None, description="Каталог с изображениями; по умолчанию DATA_ROOT/images")
+    data_dir: Optional[str] = Field(None, description="Каталог с данными: изображения и CSV определяются "
+                                                      "автоматически (см. GET /data/inspect). "
+                                                      "Явные csv_path и images_dir его переопределяют")
+    csv_path: Optional[str] = Field(None, description="CSV с колонками image_id,x,y,w,h[,vehicle_id]; "
+                                                     "путь на стороне сервиса")
+    images_dir: Optional[str] = Field(None, description="Каталог с изображениями; по умолчанию из data_dir")
     replace: bool = Field(False, description="Очистить галерею перед загрузкой. По умолчанию нет: "
                                              "повторная загрузка того же CSV просто обновит записи")
     fit_projection: bool = Field(True, description="Обучить PCA-проекцию. Нужно при первой загрузке; "
@@ -78,9 +118,13 @@ class GalleryStatsResponse(BaseModel):
 
 
 class BatchRequest(BaseModel):
-    query_csv: str = Field(description="CSV запросов: image_id,x,y,w,h (путь на стороне сервиса)")
-    gallery_csv: str = Field(description="CSV галереи: image_id,x,y,w,h")
-    images_dir: Optional[str] = Field(None, description="Каталог с изображениями; по умолчанию DATA_ROOT/images")
+    data_dir: Optional[str] = Field(None, description="Каталог с данными: изображения и CSV запросов/галереи "
+                                                      "определяются автоматически (см. GET /data/inspect). "
+                                                      "Явные query_csv, gallery_csv и images_dir его "
+                                                      "переопределяют")
+    query_csv: Optional[str] = Field(None, description="CSV запросов: image_id,x,y,w,h (путь на стороне сервиса)")
+    gallery_csv: Optional[str] = Field(None, description="CSV галереи: image_id,x,y,w,h")
+    images_dir: Optional[str] = Field(None, description="Каталог с изображениями; по умолчанию из data_dir")
     output_dir: Optional[str] = Field(None, description="Куда положить артефакты; по умолчанию OUTPUT_DIR")
     top_k: int = Field(10, ge=1, le=100)
     threshold: Optional[float] = Field(None, description="Порог режима отказа; по умолчанию из конфига")

@@ -1,21 +1,3 @@
-"""Хранилище галереи: эмбеддинги + метаданные.
-
-Два взаимозаменяемых бэкенда за одним интерфейсом:
-
-* **PostgresStore** - PostgreSQL с расширением pgvector (основной вариант из ТЗ, §6):
-  отдельный сервис в docker-compose, HNSW-индекс по косинусному расстоянию.
-  Замечание по pgvector: тип `vector` допускает до 16000 измерений, но индексы
-  (hnsw/ivfflat) - только до 2000. Поэтому эмбеддинг хранится после PCA (256-d по
-  умолчанию) - это и укладывается в лимит индекса, и на порядок экономит память
-  при том же качестве онлайн-поиска (см. EXPERIMENTS.md §9.1).
-* **SqliteStore** - реляционная СУБД в одном файле, без отдельного сервиса: метаданные
-  в таблице, векторы как BLOB, поиск матричным умножением в numpy. При базе до
-  ~100 тысяч объектов это быстрее ANN (0.43 мс на 10 000), поэтому вариант рабочий,
-  а не «заглушка»: он используется, когда DATABASE_URL не задан.
-
-PCA-проекция обучается один раз на первой массовой загрузке галереи и хранится в БД -
-иначе признаки запроса и базы окажутся в разных пространствах.
-"""
 import io
 import os
 from typing import List, Optional, Sequence, Tuple
@@ -31,7 +13,6 @@ def _l2(x: np.ndarray) -> np.ndarray:
 
 
 def _fit_pca(x: np.ndarray, dim: int) -> Tuple[np.ndarray, np.ndarray]:
-    """Без whitening: оно проверено и ухудшает качество на 6-11 pt (EXPERIMENTS.md §9.1)."""
     x = np.asarray(x, dtype=np.float32)
     mu = x.mean(axis=0, keepdims=True)
     _, _, vt = np.linalg.svd(x - mu, full_matrices=False)
@@ -39,7 +20,6 @@ def _fit_pca(x: np.ndarray, dim: int) -> Tuple[np.ndarray, np.ndarray]:
 
 
 class BaseStore:
-    """Интерфейс хранилища."""
 
     kind = "base"
 
@@ -49,8 +29,13 @@ class BaseStore:
     def projection(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         raise NotImplementedError
 
+    def set_meta(self, key: str, value: str) -> None:
+        raise NotImplementedError
+
+    def get_meta(self, key: str) -> Optional[str]:
+        raise NotImplementedError
+
     def project(self, feats: np.ndarray) -> np.ndarray:
-        """Признаки -> пространство базы (L2-норма, затем PCA, если обучена)."""
         feats = _l2(feats)
         pca = self.projection()
         if pca is None:
@@ -98,7 +83,7 @@ class SqliteStore(BaseStore):
             """
         )
         self._con.commit()
-        self._cache = None                       # (ids, vehicle_ids, matrix) - собирается лениво
+        self._cache = None
 
     def fit_projection(self, feats: np.ndarray, dim: int) -> None:
         mu, comp = _fit_pca(_l2(feats), dim)
@@ -107,6 +92,15 @@ class SqliteStore(BaseStore):
         self._con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('pca', ?)", (buf.getvalue(),))
         self._con.commit()
         self._cache = None
+
+    def set_meta(self, key, value):
+        self._con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                          (key, str(value).encode("utf-8")))
+        self._con.commit()
+
+    def get_meta(self, key):
+        row = self._con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return None if row is None else bytes(row[0]).decode("utf-8")
 
     def projection(self):
         row = self._con.execute("SELECT value FROM meta WHERE key='pca'").fetchone()
@@ -147,7 +141,6 @@ class SqliteStore(BaseStore):
             raise ValueError(f"размерность запроса {q.shape[1]} != размерности базы {mat.shape[1]}")
         sim = (q @ mat.T)[0]
         k = min(top_k, len(sim))
-        # argpartition: top-k без полной сортировки базы
         part = np.argpartition(-sim, k - 1)[:k]
         order = part[np.argsort(-sim[part])]
         return [{"image_id": str(ids[i]), "vehicle_id": None if vids[i] is None else str(vids[i]),
@@ -193,7 +186,6 @@ class PostgresStore(BaseStore):
                     embedding  vector({dim}) NOT NULL
                 )""")
             cur.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value BYTEA)")
-            # HNSW по косинусу: приближённый поиск, работает на галереях до миллионов
             cur.execute("CREATE INDEX IF NOT EXISTS gallery_emb_hnsw ON gallery "
                         "USING hnsw (embedding vector_cosine_ops)")
 
@@ -207,6 +199,18 @@ class PostgresStore(BaseStore):
         with self._con.cursor() as cur:
             cur.execute("INSERT INTO meta(key, value) VALUES ('pca', %s) "
                         "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (buf.getvalue(),))
+
+    def set_meta(self, key, value):
+        with self._con.cursor() as cur:
+            cur.execute("INSERT INTO meta(key, value) VALUES (%s, %s) "
+                        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                        (key, str(value).encode("utf-8")))
+
+    def get_meta(self, key):
+        with self._con.cursor() as cur:
+            cur.execute("SELECT value FROM meta WHERE key=%s", (key,))
+            row = cur.fetchone()
+        return None if row is None else bytes(row[0]).decode("utf-8")
 
     def projection(self):
         with self._con.cursor() as cur:
@@ -229,7 +233,6 @@ class PostgresStore(BaseStore):
         return len(items)
 
     def search(self, feat, top_k):
-        # <=> - косинусное расстояние в pgvector; сходство = 1 - расстояние
         with self._con.cursor() as cur:
             cur.execute("SELECT image_id, vehicle_id, 1 - (embedding <=> %s) AS score FROM gallery "
                         "ORDER BY embedding <=> %s LIMIT %s",
@@ -258,7 +261,6 @@ class PostgresStore(BaseStore):
 
 
 def build_store(database_url: str, sqlite_path: str, dim: int) -> BaseStore:
-    """Выбор бэкенда: задан DATABASE_URL -> PostgreSQL+pgvector, иначе SQLite."""
     if database_url:
         return PostgresStore(database_url, dim)
     return SqliteStore(sqlite_path)

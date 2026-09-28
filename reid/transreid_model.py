@@ -1,11 +1,3 @@
-"""Обёртка над клонированным репозиторием TransReID (damo-cv), чтобы дать ему
-тот же интерфейс, что и src.model.ReIDModel, и переиспользовать наш
-train/eval-конвейер (датасет, сэмплер, лоссы, метрики).
-
-Используется только "глобальная" ветка ViT (build_transformer, JPM=False) -
-локальные JPM-ветки с 5 классификаторами в этот конвейер не встроены,
-это возможное дальнейшее расширение.
-"""
 import os
 import sys
 
@@ -13,7 +5,7 @@ import torch
 
 _TRANSREID_ROOT = os.environ.get(
     "TRANSREID_ROOT",
-    os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "TransReID")),
+    os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "TransReID")),
 )
 if not os.path.isdir(_TRANSREID_ROOT):
     raise FileNotFoundError(
@@ -26,8 +18,6 @@ if _TRANSREID_ROOT not in sys.path:
 from config import cfg as _default_cfg  # noqa: E402  (импорт из TransReID после правки sys.path)
 from model.make_model import make_model as _make_model  # noqa: E402
 
-# claim: URL и имя файла - официальные веса из репозитория rwightman/pytorch-image-models,
-# на них прямо ссылается TransReID/model/backbones/vit_pytorch.py (default_cfgs)
 _PRETRAIN_URLS = {
     "vit_base_patch16_224_TransReID": (
         "https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-vitjx/"
@@ -55,7 +45,6 @@ def _ensure_pretrained(transformer_type: str, cache_dir: str) -> str:
 
 
 def build_transreid_model(num_classes: int, num_cameras: int, model_cfg: dict, pretrain_cache_dir: str):
-    """model_cfg - секция `model` из configs/config_transreid.yaml."""
     cfg = _default_cfg.clone()
     cfg.MODEL.NAME = "transformer"
     cfg.MODEL.TRANSFORMER_TYPE = model_cfg.get("transformer_type", "vit_base_patch16_224_TransReID")
@@ -64,19 +53,13 @@ def build_transreid_model(num_classes: int, num_cameras: int, model_cfg: dict, p
     cfg.MODEL.DROP_OUT = model_cfg.get("drop_out", 0.0)
     cfg.MODEL.ATT_DROP_RATE = model_cfg.get("att_drop_rate", 0.0)
 
-    cfg.MODEL.JPM = False           # см. docstring модуля
-    cfg.MODEL.ID_LOSS_TYPE = "softmax"  # обычный nn.Linear-классификатор - лосс считаем сами снаружи
+    cfg.MODEL.JPM = False
+    cfg.MODEL.ID_LOSS_TYPE = "softmax"
     cfg.MODEL.COS_LAYER = False
     cfg.MODEL.NECK = "bnneck"
     cfg.MODEL.LAST_STRIDE = 1
-    cfg.TEST.NECK_FEAT = "after"    # эмбеддинг на инференсе - признак ПОСЛЕ BNNeck (как и в ResNet-скрипте)
+    cfg.TEST.NECK_FEAT = "after"
 
-    # SIE (side information embedding) кодирует camera_id как доп. эмбеддинг у каждого патча.
-    # ВАЖНО: у настоящего test_query.csv/test_gallery.csv нет camera_id, поэтому включать
-    # SIE_CAMERA=True имеет смысл только для сравнения на внутренней валидации
-    # (она берётся из train.csv, там camera_id есть) - на реальном тестовом сабмишене
-    # эта фича не переносится. По умолчанию выключено, чтобы модель была совместима
-    # с реальным инференсом без camera_id.
     use_sie_camera = bool(model_cfg.get("sie_camera", False))
     cfg.MODEL.SIE_CAMERA = use_sie_camera
     cfg.MODEL.SIE_VIEW = False

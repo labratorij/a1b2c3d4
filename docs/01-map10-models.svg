@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 658" width="760" height="658" role="img">
+<style>
+  svg {
+    --s1: #2a78d6;
+    --s2: #eb6834;
+    --s3: #1baf7a;
+    --surface: #fcfcfb;
+    --text: #0b0b0b;
+    --muted: #52514e;
+    --grid: #e3e2df;
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    svg {
+      --s1: #3987e5;
+      --s2: #d95926;
+      --s3: #199e70;
+      --surface: #1a1a19;
+      --text: #ffffff;
+      --muted: #c3c2b7;
+      --grid: #333330;
+    }
+  }
+  .bg { fill: var(--surface); }
+  .title { fill: var(--text); font-size: 15px; font-weight: 600; }
+  .sub { fill: var(--muted); font-size: 11.5px; }
+  .lbl { fill: var(--text); font-size: 12px; }
+  .val { fill: var(--text); font-size: 12px; font-weight: 600; }
+  .ax { fill: var(--muted); font-size: 11px; }
+  .grid { stroke: var(--grid); stroke-width: 1; }
+  
+</style>
+<rect class="bg" width="760" height="658" rx="6"/>
+<text class="title" x="18" y="26">mAP@10 по эталонному протоколу: все обученные модели</text>
+<text class="sub" x="18" y="46">репетиция с реальной структурой галереи, junk-фильтрация, re-ranking k1=10 k2=3 λ=0.5</text>
+<line class="grid" x1="250.0" y1="66" x2="250.0" y2="606"/>
+<text class="ax" x="250.0" y="60" text-anchor="middle">0.35</text>
+<line class="grid" x1="358.5" y1="66" x2="358.5" y2="606"/>
+<text class="ax" x="358.5" y="60" text-anchor="middle">0.49</text>
+<line class="grid" x1="467.0" y1="66" x2="467.0" y2="606"/>
+<text class="ax" x="467.0" y="60" text-anchor="middle">0.64</text>
+<line class="grid" x1="575.5" y1="66" x2="575.5" y2="606"/>
+<text class="ax" x="575.5" y="60" text-anchor="middle">0.78</text>
+<line class="grid" x1="684.0" y1="66" x2="684.0" y2="606"/>
+<text class="ax" x="684.0" y="60" text-anchor="middle">0.92</text>
+<text class="lbl" x="238" y="86" text-anchor="end">TransReID ViT-B/16</text>
+<rect x="250" y="74" width="35.8" height="16" rx="4" fill="var(--s2)"/>
+<text class="val" x="293.8" y="87">0.397</text>
+<text class="sub" x="337.8" y="87">29 эпох</text>
+<text class="lbl" x="238" y="116" text-anchor="end">DINOv2 ViT-S/14</text>
+<rect x="250" y="104" width="265.8" height="16" rx="4" fill="var(--s1)"/>
+<text class="val" x="523.8" y="117">0.699</text>
+<text class="sub" x="567.8" y="117">рецепт не подошёл</text>
+<text class="lbl" x="238" y="146" text-anchor="end">best_resnet101_reid+</text>
+<rect x="250" y="134" width="246.9" height="16" rx="4" fill="var(--s2)"/>
+<text class="val" x="504.9" y="147">0.674</text>
+<text class="sub" x="548.9" y="147">R101 без IBN, 256x128</text>
+<text class="lbl" x="238" y="176" text-anchor="end">CLIP ViT-B/16</text>
+<rect x="250" y="164" width="284.6" height="16" rx="4" fill="var(--s1)"/>
+<text class="val" x="542.6" y="177">0.724</text>
+<text class="sub" x="586.6" y="177">рецепт не подошёл</text>
+<text class="lbl" x="238" y="206" text-anchor="end">ConvNeXt-Tiny</text>
+<rect x="250" y="194" width="301.7" height="16" rx="4" fill="var(--s1)"/>
+<text class="val" x="559.7" y="207">0.746</text>
+<text class="sub" x="603.7" y="207">оптимизация сорвана</text>
+<text class="lbl" x="238" y="236" text-anchor="end">parts512best</text>
+<rect x="250" y="224" width="305.6" height="16" rx="4" fill="var(--s2)"/>
+<text class="val" x="563.6" y="237">0.751</text>
+<text class="sub" x="607.6" y="237">20 эпох</text>
+<text class="lbl" x="238" y="266" text-anchor="end">SE-ResNeXt50</text>
+<rect x="250" y="254" width="327.2" height="16" rx="4" fill="var(--s1)"/>
+<text class="val" x="585.2" y="267">0.780</text>
+<text class="lbl" x="238" y="296" text-anchor="end">v4-veri (VeRi-init)</text>
+<rect x="250" y="284" width="338.8" height="16" rx="4" fill="var(--s1)"/>
+<text class="val" x="596.8" y="297">0.795</text>
+<text class="lbl" x="238" y="326" text-anchor="end">bestpart_700</text>
+<rect x="250" y="314" width="339.2" height="16" rx="4" fill="var(--s2)"/>
+<text class="val" x="597.2" y="327">0.795</text>
+<text class="lbl" x="238" y="356" text-anchor="end">bestresnet700</text>
+<rect x="250" y="344" width="343.0" height="16" rx="4" fill="var(--s2)"/>
+<text class="val" x="601.0" y="357">0.800</text>
+<text class="lbl" x="238" y="386" text-anchor="end">bestv2_512+</text>
+<rect x="250" y="374" width="344.2" height="16" rx="4" fill="var(--s2)"/>
+<text class="val" x="602.2" y="387">0.802</text>
+<text class="lbl" x="238" y="416" text-anchor="end">v2 — Tier-1</text>
+<rect x="250" y="404" width="355.3" height="16" rx="4" fill="var(--s1)"/>
+<text class="val" x="613.3" y="417">0.817</text>
+<text class="lbl" x="238" y="446" text-anchor="end">v5-r101</text>
+<rect x="250" y="434" width="367.4" height="16" rx="4" fill="var(--s1)"/>
+<text class="val" x="625.4" y="447">0.833</text>
+<text class="lbl" x="238" y="476" text-anchor="end">v4-clip (CLIP RN50)</text>
+<rect x="250" y="464" width="372.4" height="16" rx="4" fill="var(--s1)"/>
+<text class="val" x="630.4" y="477">0.839</text>
+<text class="lbl" x="238" y="506" text-anchor="end">v6 (кросс-камерный)</text>
+<rect x="250" y="494" width="378.5" height="16" rx="4" fill="var(--s1)"/>
+<text class="val" x="636.5" y="507">0.847</text>
+<text class="lbl" x="238" y="536" text-anchor="end">v7 (+camera-adv)</text>
+<rect x="250" y="524" width="382.9" height="16" rx="4" fill="var(--s1)"/>
+<text class="val" x="640.9" y="537">0.853</text>
+<text class="sub" x="684.9" y="537">лучшая наша</text>
+<text class="lbl" x="238" y="566" text-anchor="end">bestv10_512</text>
+<rect x="250" y="554" width="399.3" height="16" rx="4" fill="var(--s2)"/>
+<text class="val" x="657.3" y="567">0.874</text>
+<text class="sub" x="701.3" y="567">512px</text>
+<text class="lbl" x="238" y="596" text-anchor="end">ансамбль v10ext+r101</text>
+<rect x="250" y="584" width="414.3" height="16" rx="4" fill="var(--s3)"/>
+<text class="val" x="672.3" y="597">0.894</text>
+<text class="sub" x="716.3" y="597">итог</text>
+<text class="sub" x="18" y="644">синие - обучены здесь, оранжевые - на другой машине, зелёный - итоговый ансамбль</text>
+</svg>

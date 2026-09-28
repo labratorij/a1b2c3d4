@@ -1,4 +1,3 @@
-"""Страница: наполнение базы и поиск по одному снимку (продуктовый сценарий)."""
 import io
 import os
 
@@ -6,7 +5,8 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from common import API_URL, DATA_ROOT, IMAGES_DIR, api_post, gallery_stats, sidebar_status
+from common import (API_URL, IMAGES_DIR, api_post, dataset_picker, gallery_stats, inspect_dir,
+                    sidebar_status)
 from PIL import Image, ImageDraw
 
 
@@ -26,11 +26,10 @@ st.caption(f"База: {s['location']}. Индексация нужна один
            f"и переживают перезапуск сервиса.")
 
 with st.expander("Загрузить или обновить базу", expanded=s["items"] == 0):
+    data_dir, chosen = dataset_picker("bulk", [("csv_path", "CSV галереи", "bulk_csv")])
+    st.caption("Колонки image_id,x,y,w,h[,vehicle_id]. vehicle_id не обязателен, "
+               "но с ним результаты поиска понятнее.")
     with st.form("bulk"):
-        data_dir = st.text_input("Каталог с данными", value=DATA_ROOT)
-        csv_name = st.text_input("CSV галереи", value="gallery_split.csv",
-                                 help="Колонки image_id,x,y,w,h[,vehicle_id]. "
-                                      "vehicle_id не обязателен, но с ним результаты понятнее.")
         col = st.columns(3)
         replace = col[0].checkbox("Очистить базу перед загрузкой", value=s["items"] == 0,
                                   help="Без очистки повторная загрузка того же CSV просто обновит записи")
@@ -38,9 +37,8 @@ with st.expander("Загрузить или обновить базу", expanded
         fit = col[2].checkbox("Обучить PCA-проекцию", value=not s["projection"],
                               help="Нужно при первой загрузке. Проекция задаёт пространство базы, "
                                    "поэтому на непустой базе пересчитать её нельзя — только вместе с очисткой.")
-        if st.form_submit_button("Загрузить базу", type="primary"):
-            payload = {"csv_path": os.path.join(data_dir, csv_name),
-                       "images_dir": os.path.join(data_dir, "images"),
+        if st.form_submit_button("Загрузить базу", type="primary", disabled=chosen is None):
+            payload = {"data_dir": data_dir, "csv_path": chosen["csv_path"],
                        "replace": bool(replace), "fit_projection": bool(fit),
                        "limit": int(limit) or None}
             with st.spinner("Индексация галереи…"):
@@ -79,25 +77,28 @@ with right:
                     help="Ниже порога сервис отвечает отказом. 0.30 — максимум F1, "
                          "0.45 — точность 91%, 0.60 — точность 100% при полноте 39%")
 
+report, _ = inspect_dir(data_dir)
+images_dir = report["images_dir"] if report and report["images_dir"] else IMAGES_DIR
+
 img_bytes, img_name = None, None
 if up is not None:
     img_bytes, img_name = up.getvalue(), up.name
 elif by_id.strip():
-    path = os.path.join(IMAGES_DIR, f"{by_id.strip()}.jpg")
+    path = os.path.join(images_dir, f"{by_id.strip()}.jpg")
     if os.path.exists(path):
         img_bytes, img_name = open(path, "rb").read(), os.path.basename(path)
         if bw == 0 and bh == 0:
-            for csv_name in ("query_split.csv", "gallery_split.csv", "test_query.csv", "test_gallery.csv", "train.csv"):
-                p = os.path.join(DATA_ROOT, csv_name)
-                if not os.path.exists(p):
+            for c in sorted((report or {}).get("csvs", []),
+                            key=lambda c: (c["role"] not in ("query", "gallery"), c["name"])):
+                if not c["usable"]:
                     continue
-                df = pd.read_csv(p)
-                row = df[df.image_id == by_id.strip()]
+                row = pd.read_csv(c["path"], encoding="utf-8-sig")
+                row = row[row.image_id == by_id.strip()] if "image_id" in row.columns else row.head(0)
                 if len(row):
                     r0 = row.iloc[0]
                     bx, by_, bw, bh = int(r0.x), int(r0.y), int(r0.w), int(r0.h)
                     by = by_
-                    st.info(f"Рамка взята из {csv_name}: x={bx}, y={by}, w={bw}, h={bh}")
+                    st.info(f"Рамка взята из {c['name']}: x={bx}, y={by}, w={bw}, h={bh}")
                     break
     else:
         st.error(f"Файл не найден: {path}")
@@ -136,7 +137,7 @@ if "search" in st.session_state:
         rows = []
         cols = st.columns(5)
         for i, cand in enumerate(res["candidates"]):
-            path = os.path.join(IMAGES_DIR, f"{cand['image_id']}.jpg")
+            path = os.path.join(images_dir, f"{cand['image_id']}.jpg")
             rows.append({"#": i + 1, "image_id": cand["image_id"], "vehicle_id": cand["vehicle_id"],
                          "уверенность": round(cand["score"], 4), "принят": "да" if cand["accepted"] else "нет"})
             with cols[i % 5]:

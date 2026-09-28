@@ -1,18 +1,9 @@
-"""Backend сервиса формирования цифрового признака ТС.
-
-Все методы описаны спецификацией OpenAPI: она генерируется автоматически и доступна
-как /openapi.json, интерактивная документация - /docs (Swagger UI) и /redoc.
-
-Этапы обработки из ТЗ §4 отражены в методах:
-  получение  -> валидация файла и bbox во всех методах, принимающих изображение
-  обработка  -> POST /embed (эмбеддинг фиксированной размерности, float32)
-  анализ     -> POST /search (косинусный поиск по базе галереи)
-  результат  -> топ-N кандидатов либо пустой ответ (режим отказа, matched=false)
-"""
 import csv
 import io
 import os
+import shutil
 import time
+import zipfile
 from typing import List, Optional
 
 import numpy as np
@@ -22,11 +13,12 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
-from . import settings
+from . import discovery, settings
 from .engine import get_engine
-from .schemas import (BatchRequest, BatchResponse, Candidate, EmbedResponse, GalleryBulkRequest,
-                      GalleryBulkResponse, GalleryItemResult, GalleryStatsResponse,
-                      GalleryUpsertResponse, HealthResponse, SearchResponse)
+from .schemas import (BatchRequest, BatchResponse, Candidate, DatasetInspectResponse, EmbedResponse,
+                      GalleryBulkRequest, GalleryBulkResponse, GalleryItemResult,
+                      GalleryStatsResponse, GalleryUpsertResponse, HealthResponse, SearchResponse,
+                      UploadResponse, WorkspaceInfo)
 from .store import build_store
 
 DESCRIPTION = """
@@ -60,6 +52,7 @@ app = FastAPI(
         {"name": "Признак", "description": "Формирование эмбеддинга по изображению и bbox"},
         {"name": "Галерея", "description": "База эмбеддингов: загрузка, статистика, удаление"},
         {"name": "Поиск", "description": "Поиск по галерее с режимом отказа"},
+        {"name": "Данные", "description": "Разбор каталога с изображениями и CSV перед обработкой"},
         {"name": "Пакетная обработка", "description": "Формирование артефактов сдачи"},
         {"name": "Интерпретируемость", "description": "Почему модель считает снимки похожими"},
     ],
@@ -69,7 +62,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.exception_handler(ValueError)
 def value_error_handler(request, exc: ValueError):
-    """Некорректные входные данные (битый файл, несовпадение размерностей) - это 422, не 500."""
     return JSONResponse(status_code=422, content={"detail": str(exc)})
 
 _store = None
@@ -84,7 +76,6 @@ def store():
 
 
 def parse_bbox(bbox: Optional[str], x, y, w, h) -> Optional[List[float]]:
-    """bbox можно передать строкой "x,y,w,h" или четырьмя полями."""
     if bbox:
         parts = [p.strip() for p in bbox.replace(";", ",").split(",") if p.strip()]
         if len(parts) != 4:
@@ -118,8 +109,39 @@ def resolve(path: str, label: str) -> str:
     return p
 
 
+def discover(data_dir: Optional[str]) -> Optional[dict]:
+    path = data_dir or settings.DATA_ROOT
+    p = path if os.path.isabs(path) else os.path.join(settings.SERVICE_DIR, path)
+    if not os.path.isdir(p):
+        if data_dir:
+            raise HTTPException(404, f"каталог с данными не найден: {p}")
+        return None
+    return discovery.inspect(os.path.normpath(p))
+
+
+def need_csv(explicit: Optional[str], report: Optional[dict], key: str, label: str) -> str:
+    if explicit:
+        return resolve(explicit, label)
+    if report is None:
+        raise HTTPException(422, f"не задан {label}: передайте путь явно или укажите data_dir")
+    path = report["suggested"].get(key)
+    if not path:
+        found = ", ".join(c["name"] for c in report["csvs"]) or "ни одного"
+        raise HTTPException(422, f"в каталоге {report['root']} не удалось определить {label}. "
+                                 f"Найдено CSV: {found}. Передайте путь явно или переименуйте файл "
+                                 f"так, чтобы в имени было query или gallery")
+    return path
+
+
+def need_images(explicit: Optional[str], report: Optional[dict]) -> str:
+    if explicit:
+        return resolve(explicit, "каталог изображений")
+    if report and report["images_dir"]:
+        return report["images_dir"]
+    return resolve(os.path.join(settings.DATA_ROOT, "images"), "каталог изображений")
+
+
 def read_annotation_csv(path: str) -> pd.DataFrame:
-    """CSV с заголовком или без (формат test_query.csv / test_gallery.csv)."""
     cols = ["image_id", "x", "y", "w", "h", "vehicle_id", "camera_id"]
     with open(path, "r", encoding="utf-8-sig") as f:
         first = f.readline().strip().split(",")
@@ -156,6 +178,73 @@ async def embed(
     return {"image_id": image_id, "dim": int(feat.shape[1]), "embedding": feat[0].tolist()}
 
 
+@app.get("/data/inspect", response_model=DatasetInspectResponse, tags=["Данные"],
+         summary="Разобрать каталог: найти изображения и CSV, определить их роли")
+def data_inspect(path: Optional[str] = Query(None, description="Каталог на стороне сервиса. "
+                                                               "Относительный путь считается от корня "
+                                                               "сервиса. Без параметра берётся DATA_ROOT")):
+    report = discover(path)
+    if report is None:
+        raise HTTPException(404, f"каталог с данными не найден: {settings.DATA_ROOT}")
+    return report
+
+
+@app.post("/data/upload", response_model=UploadResponse, tags=["Данные"],
+          summary="Загрузить изображения и CSV с компьютера пользователя")
+async def data_upload(
+    files: List[UploadFile] = File(..., description="Изображения, CSV или ZIP-архив каталога. "
+                                                   "ZIP распаковывается, файлы раскладываются "
+                                                   "по типу: изображения в images/, CSV в корень"),
+    name: str = Form("upload", description="Имя рабочего каталога на сервере"),
+    reset: bool = Form(False, description="Очистить каталог перед загрузкой"),
+):
+    root = discovery.workspace_path(settings.UPLOAD_DIR, name)
+    if reset and os.path.isdir(root):
+        shutil.rmtree(root)
+    os.makedirs(os.path.join(root, "images"), exist_ok=True)
+
+    received, skipped, total = 0, [], 0
+    limit = settings.MAX_UPLOAD_TOTAL_MB * 2 ** 20
+    for f in files:
+        data = await f.read()
+        total += len(data)
+        if total > limit:
+            raise HTTPException(413, f"суммарный размер загрузки превысил "
+                                     f"{settings.MAX_UPLOAD_TOTAL_MB:.0f} МБ")
+        if os.path.splitext(f.filename or "")[1].lower() == ".zip":
+            try:
+                ok, bad = discovery.unpack_zip(root, data)
+            except zipfile.BadZipFile:
+                skipped.append(f"{f.filename}: повреждённый ZIP")
+                continue
+            received += ok
+            if bad:
+                skipped.append(f"{f.filename}: пропущено записей {bad} (не изображение и не CSV)")
+        elif discovery.place(root, f.filename or "", data) is None:
+            skipped.append(f"{f.filename}: не изображение и не CSV")
+        else:
+            received += 1
+
+    if not received:
+        raise HTTPException(422, "не принято ни одного файла: нужны изображения "
+                                 f"({'/'.join(sorted(discovery.IMAGE_EXT))}), CSV или ZIP")
+    return {"name": os.path.basename(root), "data_dir": root, "received": received,
+            "skipped": skipped, "dataset": discovery.inspect(root)}
+
+
+@app.get("/data/uploads", response_model=List[WorkspaceInfo], tags=["Данные"],
+         summary="Ранее загруженные каталоги")
+def data_uploads():
+    return discovery.list_workspaces(settings.UPLOAD_DIR)
+
+
+@app.delete("/data/uploads/{name}", tags=["Данные"], summary="Удалить загруженный каталог")
+def data_upload_delete(name: str):
+    if not discovery.drop_workspace(settings.UPLOAD_DIR, name):
+        raise HTTPException(404, f"загруженный каталог не найден: {name}")
+    return {"removed": name}
+
+
 @app.get("/gallery/stats", response_model=GalleryStatsResponse, tags=["Галерея"],
          summary="Размер и параметры базы галереи")
 def gallery_stats():
@@ -188,8 +277,9 @@ async def gallery_add(
           summary="Проиндексировать галерею из CSV с аннотациями")
 def gallery_bulk(req: GalleryBulkRequest = Body(...)):
     eng, st = get_engine(), store()
-    csv_path = resolve(req.csv_path, "CSV галереи")
-    images_dir = resolve(req.images_dir or os.path.join(settings.DATA_ROOT, "images"), "каталог изображений")
+    report = discover(req.data_dir)
+    csv_path = need_csv(req.csv_path, report, "bulk_csv", "CSV галереи")
+    images_dir = need_images(req.images_dir, report)
     df = read_annotation_csv(csv_path)
     if req.limit:
         df = df.head(req.limit)
@@ -224,6 +314,7 @@ def gallery_bulk(req: GalleryBulkRequest = Body(...)):
     st.upsert([{"image_id": str(r.image_id),
                 "vehicle_id": None if "vehicle_id" not in rows.columns or pd.isna(r.vehicle_id) else str(r.vehicle_id),
                 "source": os.path.basename(csv_path)} for r in rows.itertuples()], vecs)
+    st.set_meta("images_dir", images_dir)
     return {"indexed": len(ok), "failed": len(df) - len(ok), "gallery_size": st.stats()["items"],
             "dim": int(vecs.shape[1]), "seconds": round(time.time() - t0, 2), "projection_dim": proj_dim}
 
@@ -281,9 +372,10 @@ async def search(
           summary="Сформировать submission.csv, candidates.csv и embeddings.npy")
 def jobs_batch(req: BatchRequest = Body(...)):
     eng = get_engine()
-    q_path = resolve(req.query_csv, "CSV запросов")
-    g_path = resolve(req.gallery_csv, "CSV галереи")
-    images_dir = resolve(req.images_dir or os.path.join(settings.DATA_ROOT, "images"), "каталог изображений")
+    report = discover(req.data_dir)
+    q_path = need_csv(req.query_csv, report, "query_csv", "CSV запросов")
+    g_path = need_csv(req.gallery_csv, report, "gallery_csv", "CSV галереи")
+    images_dir = need_images(req.images_dir, report)
     out_dir = req.output_dir or settings.OUTPUT_DIR
     out_dir = out_dir if os.path.isabs(out_dir) else os.path.join(settings.SERVICE_DIR, out_dir)
     os.makedirs(out_dir, exist_ok=True)
@@ -301,8 +393,6 @@ def jobs_batch(req: BatchRequest = Body(...)):
         raise HTTPException(422, f"не удалось прочитать изображения из {images_dir}")
     qdf, gdf = qdf.iloc[q_ok].reset_index(drop=True), gdf.iloc[g_ok].reset_index(drop=True)
 
-    # уверенность для режима отказа всегда по косинусу: порог откалиброван на нём,
-    # а шкала re-ranked score другая (см. EXPERIMENTS.md §7.2)
     cos = qf @ gf.T
     sim = eng.rerank(qf, gf) if req.use_reranking else cos
     top_k = min(req.top_k, len(gdf))
@@ -322,7 +412,7 @@ def jobs_batch(req: BatchRequest = Body(...)):
         wr.writerow(["query_id", "gallery_id", "confidence"])
         for i, qid in enumerate(qdf.image_id):
             j = int(order[i, 0])
-            if cos[i, j] >= thr:                    # ниже порога - пустой ответ (отказ)
+            if cos[i, j] >= thr:
                 wr.writerow([qid, g_ids[j], round(float(cos[i, j]), 6)])
                 accepted += 1
     return {"n_query": len(qdf), "n_gallery": len(gdf), "accepted": accepted,
@@ -330,11 +420,6 @@ def jobs_batch(req: BatchRequest = Body(...)):
 
 
 def _reference_image(image_id: str, images_dir: str):
-    """Изображение кандидата с диска и его рамка из аннотаций -> (image, bbox).
-
-    Для объяснения нужен исходный кадр: в базе лежит только эмбеддинг, да ещё и
-    сокращённый PCA, а Grad-CAM строится в пространстве модели.
-    """
     path = os.path.join(images_dir, f"{image_id}.jpg")
     if not os.path.exists(path):
         raise HTTPException(404, f"снимок галереи не найден на диске: {path}. "
@@ -356,7 +441,19 @@ def _reference_image(image_id: str, images_dir: str):
         return im.copy(), bbox
 
 
+EXPLAIN_DESCRIPTION = (
+    "Тепловая карта областей, определивших сходство запроса и кандидата.\n\n"
+    "Считается градиент косинусного сходства по карте активаций последнего блока "
+    "backbone (Grad-CAM). Сходство симметрично, поэтому в режиме `pair` строятся карты "
+    "для **обоих** снимков: карта запроса — относительно эмбеддинга кандидата, карта "
+    "кандидата — относительно эмбеддинга запроса. Так видно, смотрела ли модель на "
+    "соответственные части. У ансамбля карты членов усредняются; метрики внимания — "
+    "в заголовках X-Focus-*."
+)
+
+
 @app.post("/explain", tags=["Интерпретируемость"], summary="Grad-CAM: почему снимки признаны похожими",
+          description=EXPLAIN_DESCRIPTION,
           responses={200: {"content": {"image/png": {}},
                            "description": "PNG: строка на снимок — кроп и тепловая карта рядом"}})
 async def explain(
@@ -368,25 +465,20 @@ async def explain(
                                                               "по умолчанию — лучший кандидат"),
     mode: str = Form("pair", description="pair — карты для обоих снимков (по умолчанию); "
                                          "side_by_side — кроп запроса и его карта; overlay — только карта запроса"),
+    images_dir: Optional[str] = Form(None, description="Где лежат снимки галереи. По умолчанию — "
+                                                       "каталог, из которого её наполняли"),
 ):
-    """Тепловая карта областей, определивших сходство запроса и кандидата.
-
-    Считается градиент косинусного сходства по карте активаций последнего блока backbone
-    (Grad-CAM). Сходство симметрично, поэтому в режиме `pair` строятся карты для **обоих**
-    снимков: карта запроса — относительно эмбеддинга кандидата, карта кандидата —
-    относительно эмбеддинга запроса. Так видно, смотрела ли модель на соответственные
-    части. У ансамбля карты членов усредняются; метрики внимания — в заголовках X-Focus-*.
-    """
     eng, st = get_engine(), store()
     if mode not in ("pair", "side_by_side", "overlay"):
         raise HTTPException(422, "mode должен быть pair, side_by_side или overlay")
     img = eng.open_image(await read_upload(file))
     box = parse_bbox(bbox, x, y, w, h)
-    images_dir = os.path.join(settings.DATA_ROOT, "images")
+    images_dir = (images_dir or st.get_meta("images_dir")
+                  or os.path.join(settings.DATA_ROOT, "images"))
 
     ref_id = reference_image_id
     score = None
-    if ref_id is None:                       # берём лучшего кандидата из базы
+    if ref_id is None:
         if st.stats()["items"] == 0:
             raise HTTPException(409, "галерея пуста и reference_image_id не задан: "
                                      "не с чем сравнивать")

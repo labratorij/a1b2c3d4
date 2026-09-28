@@ -1,14 +1,3 @@
-"""Запуск сервиса без Docker: backend и веб-интерфейс одной командой.
-
-    python service/run_local.py                 # из корня решения
-    python run_local.py                         # из каталога service
-    python service/run_local.py --api-only      # только backend
-    python service/run_local.py --port 8000 --ui-port 8501
-
-По умолчанию хранилище — SQLite (файл service/data/gallery.sqlite), отдельная СУБД не нужна.
-Чтобы использовать PostgreSQL с pgvector, задайте переменную окружения:
-    DATABASE_URL=postgresql://reid:reid@localhost:5432/reid
-"""
 import argparse
 import os
 import subprocess
@@ -39,7 +28,7 @@ def main():
     ap.add_argument("--host", default="127.0.0.1", help="адрес прослушивания")
     ap.add_argument("--api-only", action="store_true", help="не запускать интерфейс")
     ap.add_argument("--ui-only", action="store_true", help="не запускать backend (уже запущен)")
-    ap.add_argument("--data-root", default=None, help="каталог с данными (иначе ../../Датасет)")
+    ap.add_argument("--data-root", default=None, help="каталог с данными (иначе service/data/dataset)")
     ap.add_argument("--reload", action="store_true", help="перезапуск backend при правке кода")
     args = ap.parse_args()
 
@@ -62,7 +51,6 @@ def main():
                 cmd.append("--reload")
             print(f"[1/2] backend:   {api_url}/docs   (Swagger)")
             procs.append(subprocess.Popen(cmd, cwd=SERVICE_DIR, env=env))
-            # первый запрос загружает модель, поэтому ждём щедро
             if not wait_for(f"{api_url}/openapi.json", 180, "backend"):
                 raise SystemExit(1)
 

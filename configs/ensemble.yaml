@@ -5,7 +5,7 @@
 # Метрики по эталонному протоколу: mAP@10 0.894, Rank-1 0.843, F1 0.598.
 # Порядок членов важен: первый задаёт размер батча (512), остальные ресайзятся вниз.
 data:
-  root: "../../Датасет"
+  root: "data/dataset"
   images_dir: "images"
   query_csv: "test_query.csv"
   gallery_csv: "test_gallery.csv"

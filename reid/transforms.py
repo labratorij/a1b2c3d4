@@ -7,22 +7,18 @@ from PIL import Image
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
-# значения по умолчанию = поведение до появления секции data.aug, чтобы старые
-# конфиги (v2...v7) воспроизводились без изменений
 DEFAULT_AUG = {
-    "color_jitter": [0.15, 0.15, 0.1, 0.02],   # brightness, contrast, saturation, hue
+    "color_jitter": [0.15, 0.15, 0.1, 0.02],
     "erasing_p": 0.5,
-    "rotation": 0.0,                            # градусы, 0 = выключено
-    "blur_p": 0.0,                              # вероятность гауссова размытия
-    "jpeg_p": 0.0,                              # вероятность пережатия в JPEG
+    "rotation": 0.0,
+    "blur_p": 0.0,
+    "jpeg_p": 0.0,
     "jpeg_quality": [40, 90],
-    "grayscale_p": 0.0,                         # осторожно: цвет для ТС - сильный признак
+    "grayscale_p": 0.0,
 }
 
 
 class RandomJPEG:
-    """Пережатие в JPEG со случайным качеством: в тесте кадры с камер разного качества,
-    а train.csv и test_*.csv - одни и те же исходники, так что модель этого не видит."""
 
     def __init__(self, p: float, quality=(40, 90)):
         self.p = p
@@ -41,11 +37,10 @@ class RandomJPEG:
 
 
 def build_train_transforms(image_size, mean=IMAGENET_MEAN, std=IMAGENET_STD, aug=None):
-    """aug - секция data.aug конфига; None/{} даёт исходный набор аугментаций."""
     a = dict(DEFAULT_AUG)
     a.update(aug or {})
     h, w = image_size
-    fill = tuple(int(255 * m) for m in mean)      # заполнение углов при повороте - серый уровня среднего
+    fill = tuple(int(255 * m) for m in mean)
     ops = [
         T.Resize((h, w)),
         T.Pad(10),

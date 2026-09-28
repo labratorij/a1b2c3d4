@@ -17,22 +17,12 @@ class CrossEntropyLabelSmooth(nn.Module):
 
 
 def _pairwise_euclidean(x: torch.Tensor) -> torch.Tensor:
-    """(N, N) матрица евклидовых расстояний между строками x."""
     sq = (x ** 2).sum(dim=1, keepdim=True)
     dist = sq + sq.t() - 2 * x @ x.t()
     return dist.clamp(min=1e-12).sqrt()
 
 
 class TripletLoss(nn.Module):
-    """Batch-hard triplet loss (Hermans et al., 2017) с soft-margin или заданным margin.
-
-    cross_camera=True: самый далёкий позитив выбирается только среди кадров того же
-    ТС с ДРУГОЙ камеры (если в батче таких нет - откат на обычный batch-hard).
-    Мотивация: в замерах по эталонному протоколу однокамерные пары имеют медиану
-    косинуса 0.845, а кросс-камерные - 0.311, и именно кросс-камерные идут в зачёт
-    (однокамерные выбрасываются junk-фильтрацией). Обычный batch-hard почти всегда
-    подсовывает в качестве "трудного" позитива однокамерный кадр, т.е. учит лёгкому.
-    """
 
     def __init__(self, margin: float = 0.3, cross_camera: bool = False):
         super().__init__()
@@ -76,12 +66,6 @@ class _GradReverse(torch.autograd.Function):
 
 
 class CameraAdversarialHead(nn.Module):
-    """Классификатор камеры через слой инверсии градиента (Ganin & Lempitsky, 2015).
-
-    Голова учится предсказывать camera_id, а backbone из-за инверсии градиента -
-    наоборот, делать признак неинформативным о камере. Живёт только в train.py и
-    в model.state_dict() не попадает, поэтому чекпоинты/инференс не меняются.
-    """
 
     def __init__(self, feat_dim: int, num_cameras: int, lambd: float = 0.1):
         super().__init__()

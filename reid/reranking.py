@@ -1,8 +1,3 @@
-"""k-reciprocal re-ranking (Zhong et al., CVPR 2017).
-
-Работает как offline-постобработка над эмбеддингами query+gallery:
-не входит в замеряемое время извлечения признака одного ТС.
-"""
 import numpy as np
 
 
@@ -13,7 +8,6 @@ def _normalize(feat: np.ndarray) -> np.ndarray:
 
 def re_ranking(query_feat: np.ndarray, gallery_feat: np.ndarray,
                k1: int = 20, k2: int = 6, lambda_value: float = 0.3) -> np.ndarray:
-    """Возвращает финальную (n_query, n_gallery) матрицу расстояний (меньше = ближе)."""
     query_feat = _normalize(query_feat.astype(np.float32))
     gallery_feat = _normalize(gallery_feat.astype(np.float32))
 
@@ -21,7 +15,7 @@ def re_ranking(query_feat: np.ndarray, gallery_feat: np.ndarray,
     n_all = all_feat.shape[0]
     n_q = query_feat.shape[0]
 
-    dist = 2 - 2 * (all_feat @ all_feat.T)  # euclidean^2 для L2-нормированных векторов
+    dist = 2 - 2 * (all_feat @ all_feat.T)
     dist = np.clip(dist, 0, None)
 
     original_dist = np.power(dist, 2).astype(np.float32)

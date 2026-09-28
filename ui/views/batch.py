@@ -1,11 +1,10 @@
-"""Страница: пакетная обработка набора данных -> артефакты в формате сдачи."""
 import os
 
 import pandas as pd
 import requests
 import streamlit as st
 
-from common import DATA_ROOT, api_post, sidebar_status
+from common import api_post, dataset_picker, sidebar_status
 
 
 st.title("Пакетная обработка набора данных")
@@ -13,15 +12,12 @@ st.caption("Прогон всех запросов по галерее и фор
            "candidates.csv, embeddings.npy.")
 sidebar_status()
 
+data_dir, chosen = dataset_picker("batch", [
+    ("query_csv", "CSV запросов", "query_csv"),
+    ("gallery_csv", "CSV галереи", "gallery_csv"),
+])
+
 with st.form("batch"):
-    data_dir = st.text_input(
-        "Каталог с данными", value=DATA_ROOT,
-        help="Путь на стороне сервиса (в контейнере он смонтирован из docker-compose). "
-             "Внутри ожидаются images/ и CSV с аннотациями.")
-    c1, c2 = st.columns(2)
-    query_csv = c1.text_input("CSV запросов", value="test_query.csv",
-                              help="Колонки image_id,x,y,w,h — с заголовком или без")
-    gallery_csv = c2.text_input("CSV галереи", value="test_gallery.csv")
     c3, c4, c5 = st.columns(3)
     top_k = c3.number_input("Кандидатов на запрос (top-K)", 1, 100, 10)
     threshold = c4.slider("Порог режима отказа", 0.0, 1.0, 0.30, 0.01,
@@ -29,15 +25,18 @@ with st.form("batch"):
     rerank = c5.checkbox("k-reciprocal re-ranking", value=True,
                          help="Работает только на пакете запросов: +3.4 pt mAP@10. "
                               "В онлайн-поиске по одному фото не применяется.")
-    out_dir = st.text_input("Каталог для результатов", value="outputs/service",
-                            help="Относительно корня решения на стороне сервиса")
-    submitted = st.form_submit_button("Запустить обработку", type="primary")
+    out_dir = st.text_input("Каталог для результатов", value="data/outputs",
+                            help="Относительно каталога сервиса. Каталог data/ в Docker "
+                                 "смонтирован томом, поэтому артефакты переживают "
+                                 "пересоздание контейнера")
+    submitted = st.form_submit_button("Запустить обработку", type="primary",
+                                      disabled=chosen is None)
 
 if submitted:
     payload = {
-        "query_csv": os.path.join(data_dir, query_csv),
-        "gallery_csv": os.path.join(data_dir, gallery_csv),
-        "images_dir": os.path.join(data_dir, "images"),
+        "data_dir": data_dir,
+        "query_csv": chosen["query_csv"],
+        "gallery_csv": chosen["gallery_csv"],
         "output_dir": out_dir,
         "top_k": int(top_k),
         "threshold": float(threshold),
@@ -71,7 +70,7 @@ if res:
                              ("embeddings.npy", "embeddings", "application/octet-stream")):
         path = res["files"][key]
         cols = st.columns([3, 1])
-        if os.path.exists(path):                      # UI и API на одной машине - отдаём файл на скачивание
+        if os.path.exists(path):
             size = os.path.getsize(path) / 2 ** 20
             cols[0].write(f"**{label}** — {size:.1f} МБ")
             with open(path, "rb") as f:
@@ -94,7 +93,16 @@ if res:
                    f"уверенность ниже порога.")
         if len(cdf):
             st.dataframe(cdf.head(15), width="stretch", hide_index=True)
-            st.bar_chart(cdf.confidence.value_counts(bins=20).sort_index(), x_label="уверенность",
-                         y_label="запросов")
+            # Не st.bar_chart: он делает ось X порядковой и печатает подпись под каждым
+            # столбцом - двадцать подписей налезают друг на друга. Здесь ось количественная,
+            # Vega сам расставляет засечки, а разбиение на интервалы делает тоже он.
+            st.vega_lite_chart(cdf[["confidence"]], {
+                "mark": {"type": "bar", "tooltip": True},
+                "encoding": {
+                    "x": {"field": "confidence", "type": "quantitative",
+                          "bin": {"maxbins": 20}, "title": "уверенность"},
+                    "y": {"aggregate": "count", "type": "quantitative", "title": "запросов"},
+                },
+            }, width="stretch")
 else:
     st.info("Заполните форму и нажмите «Запустить обработку».")

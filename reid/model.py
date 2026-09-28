@@ -16,23 +16,12 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
 class TimmBackbone(nn.Module):
-    """Любая CNN из timm как backbone: forward -> карта признаков (B, C, H/s, W/s).
-
-    Основной сценарий - CLIP-претрейн: `timm:resnet50_clip.openai`, `timm:resnet101_clip.openai`
-    (image-encoder CLIP от OpenAI, 400M пар картинка-текст; берётся конв-ствол без attention-pool).
-    Годятся и другие: `timm:resnest50d`, `timm:seresnext101_32x8d` и т.п.
-    last_stride=1 реализован через output_stride=16 (dilation в последней стадии - стандарт timm).
-    Нормализация входа берётся из pretrained_cfg модели (у CLIP она не ImageNet'овская).
-    """
 
     def __init__(self, name: str, pretrained: bool, last_stride: int, img_size=None):
         super().__init__()
         import timm
         kwargs = dict(pretrained=pretrained, num_classes=0, global_pool="")
         probe = timm.create_model(name, pretrained=False, num_classes=0, global_pool="")
-        # ViT-семейство отдаёт токены (B, N+prefix, C), свёрточные - карту (B, C, H, W).
-        # У ViT нет output_stride, зато нужен img_size, если вход не совпадает с родным
-        # (позиционные эмбеддинги интерполируются timm'ом).
         self.is_vit = hasattr(probe, "patch_embed")
         if self.is_vit:
             if img_size is not None:
@@ -59,14 +48,12 @@ class TimmBackbone(nn.Module):
 
     def forward(self, x):
         feat = self.net.forward_features(x)
-        if feat.dim() == 4:                      # свёрточный backbone: уже (B, C, H, W)
+        if feat.dim() == 4:
             return feat
-        # ViT: убираем служебные токены (CLS и т.п.) и раскладываем патчи в 2D-сетку,
-        # чтобы дальше работали GeM/GAP и PCB-полосы по высоте
         feat = feat[:, self.num_prefix_tokens:]
         b, n, c = feat.shape
         gh, gw = self.net.patch_embed.grid_size
-        if gh * gw != n:                         # dynamic_img_size: сетка не совпала с конфигом
+        if gh * gw != n:
             gh = gw = int(round(n ** 0.5))
             if gh * gw != n:
                 raise RuntimeError(f"не удалось разложить {n} токенов в сетку для {type(self.net).__name__}")
@@ -85,9 +72,6 @@ def weights_init_kaiming(m):
 
 
 class GeM(nn.Module):
-    """Generalized-mean pooling (Radenovic et al., TPAMI 2019): (mean(x^p))^(1/p),
-    p обучаемый. p=1 - обычный GAP, p->inf - max-pool; стартуем с p=3.
-    Стандарт в fast-reid "stronger baseline" (SBS) вместо GAP."""
 
     def __init__(self, p: float = 3.0, eps: float = 1e-6):
         super().__init__()
@@ -95,8 +79,6 @@ class GeM(nn.Module):
         self.eps = eps
 
     def forward(self, x):
-        # clamp(min=eps): после ReLU карта >= 0, eps защищает степень от нуля;
-        # считаем в fp32 - под autocast x^p при p~3 в fp16 переполняется
         x = x.float().clamp(min=self.eps).pow(self.p)
         return F.adaptive_avg_pool2d(x, 1).pow(1.0 / self.p)
 
@@ -105,21 +87,6 @@ class GeM(nn.Module):
 
 
 class MarginClassifier(nn.Module):
-    """ID-классификатор без bias с опциональным margin-softmax.
-
-    kind='linear'  - обычный nn.Linear(bias=False), как в Bag of Tricks (логиты = W·f).
-    Остальные варианты работают на косинусе cos = <f/|f|, w/|w|>, умноженном на scale s,
-    и штрафуют целевой класс margin'ом m - это заставляет модель напрямую сжимать
-    внутриклассовый разброс косинусов (важно для порога "свой/чужой" в candidates.csv):
-      cosface  (Wang et al. 2018, AM-Softmax): target = s·(cos - m)
-      arcface  (Deng et al. 2019):             target = s·cos(θ + m)
-      circle   (Sun et al. 2020, CircleSoftmax из fast-reid): адаптивные веса
-               α_p = relu(1 + m - cos), α_n = relu(cos + m); target = s·α_p·(cos - (1 - m)),
-               other = s·α_n·(cos - m)
-    Параметр называется `weight` с той же формой, что у nn.Linear, поэтому старые
-    чекпоинты (classifier.weight) грузятся без переименований.
-    В eval / без labels возвращает s·cos (или W·f для linear) - в инференсе не используется.
-    """
 
     KINDS = ("linear", "cosface", "arcface", "circle")
 
@@ -134,16 +101,14 @@ class MarginClassifier(nn.Module):
         self.num_classes = num_classes
         self.weight = nn.Parameter(torch.empty(num_classes, feat_dim))
         if kind == "linear":
-            nn.init.normal_(self.weight, std=0.001)  # weights_init_classifier из BoT
+            nn.init.normal_(self.weight, std=0.001)
         else:
-            nn.init.normal_(self.weight, std=0.01)   # веса нормируются, масштаб init не важен
+            nn.init.normal_(self.weight, std=0.01)
 
     def forward(self, feat: torch.Tensor, labels: torch.Tensor = None) -> torch.Tensor:
         if self.kind == "linear":
             return F.linear(feat, self.weight)
 
-        # косинусы считаем в fp32 с выключенным autocast (иначе F.linear всё равно уйдёт в fp16,
-        # а acos и умножение на s=30..64 в fp16 теряют точность)
         with torch.autocast(device_type=feat.device.type, enabled=False):
             cos = F.linear(F.normalize(feat.float(), dim=1), F.normalize(self.weight.float(), dim=1))
         cos = cos.clamp(-1 + 1e-7, 1 - 1e-7)
@@ -156,10 +121,9 @@ class MarginClassifier(nn.Module):
             logits = torch.where(one_hot, cos - m, cos) * s
         elif self.kind == "arcface":
             target = torch.cos(torch.acos(cos) + m)
-            # easy-margin fallback: если θ + m > π, cos(θ+m) перестаёт быть монотонным - берём cos - m·sin(m)
             target = torch.where(cos > math.cos(math.pi - m), target, cos - m * math.sin(m))
             logits = torch.where(one_hot, target, cos) * s
-        else:  # circle
+        else:
             alpha_p = torch.clamp_min(1 + m - cos, 0.0)
             alpha_n = torch.clamp_min(cos + m, 0.0)
             s_p = s * alpha_p * (cos - (1 - m))
@@ -196,7 +160,6 @@ def _build_backbone(backbone: str, pretrained: bool, last_stride: int = 2, img_s
         else:
             net = resnet50(weights=ResNet50_Weights.IMAGENET1K_V2 if pretrained else None)
         if last_stride == 1:
-            # torchvision: даунсемпл в первом блоке layer4 сидит в conv2 (3x3) и в downsample-conv
             net.layer4[0].conv2.stride = (1, 1)
             net.layer4[0].downsample[0].stride = (1, 1)
         return nn.Sequential(*list(net.children())[:-2]), 2048
@@ -204,13 +167,6 @@ def _build_backbone(backbone: str, pretrained: bool, last_stride: int = 2, img_s
 
 
 class ReIDModel(nn.Module):
-    """Backbone + GAP + BNNeck (Bag of Tricks, Luo et al. 2019).
-
-    forward возвращает:
-      - global_feat: признак ДО BN (используется для triplet loss)
-      - bn_feat: признак ПОСЛЕ BN (используется как эмбеддинг на инференсе и для ID-classifier)
-      - cls_score: логиты классификатора (только при training и известном num_classes)
-    """
 
     def __init__(self, num_classes: int, backbone: str = "resnet50_ibn_a", pretrained: bool = True,
                  last_stride: int = 2, pooling: str = "avg",
@@ -222,18 +178,18 @@ class ReIDModel(nn.Module):
         self.out_dim = feat_dim
         self.gap = _build_pooling(pooling)
         self.bottleneck = nn.BatchNorm1d(feat_dim)
-        self.bottleneck.bias.requires_grad_(False)  # no bias per Bag-of-Tricks
+        self.bottleneck.bias.requires_grad_(False)
         self.bottleneck.apply(weights_init_kaiming)
 
         self.classifier = MarginClassifier(feat_dim, num_classes, head, head_scale, head_margin)
 
     def forward(self, x, labels=None):
         feat_map = self.backbone(x)
-        global_feat = self.gap(feat_map).flatten(1)  # (B, feat_dim), до BN
-        bn_feat = self.bottleneck(global_feat)        # (B, feat_dim), после BN
+        global_feat = self.gap(feat_map).flatten(1)
+        bn_feat = self.bottleneck(global_feat)
 
         if self.training:
-            cls_score = self.classifier(bn_feat, labels)  # labels нужны margin-головам (cosface/arcface/circle)
+            cls_score = self.classifier(bn_feat, labels)
             return global_feat, bn_feat, cls_score
         return bn_feat
 
@@ -254,16 +210,6 @@ def _init_reduce_block(block: nn.Sequential):
 
 
 class PartReIDModel(nn.Module):
-    """Backbone + глобальная ветка (GAP+BNNeck, как в ReIDModel) + N локальных
-    веток по горизонтальным полосам карты признаков (в духе PCB, Sun et al.
-    2018 "Beyond Part Models"): карта признаков режется на num_parts равных
-    полос по высоте, каждая полоса пулится и учится своим ID-классификатором.
-
-    Инференс (self.eval()) возвращает ОДИН тензор - конкатенацию
-    [global_bn, local_bn_1, ..., local_bn_N] - точно как ReIDModel.forward
-    в eval-режиме, поэтому extract_features/inference-код не меняется.
-    Триплет-лосс считается только на глобальной ветке (как в классическом PCB).
-    """
 
     def __init__(self, num_classes: int, backbone: str = "resnet50_ibn_a", pretrained: bool = True,
                  num_parts: int = 3, part_dim: int = 256, last_stride: int = 2, pooling: str = "avg",
@@ -282,7 +228,7 @@ class PartReIDModel(nn.Module):
         self.bottleneck.apply(weights_init_kaiming)
         self.classifier = MarginClassifier(feat_dim, num_classes, head, head_scale, head_margin)
 
-        self.part_pool = nn.AdaptiveAvgPool2d(1)  # полосы - всегда GAP, как в PCB
+        self.part_pool = nn.AdaptiveAvgPool2d(1)
         self.part_reduce = nn.ModuleList([
             nn.Sequential(
                 nn.Conv2d(feat_dim, part_dim, kernel_size=1, bias=False),
@@ -298,7 +244,6 @@ class PartReIDModel(nn.Module):
             bn.bias.requires_grad_(False)
             bn.apply(weights_init_kaiming)
 
-        # у полос та же голова, что у глобальной ветки (margin-softmax на 256-d косинусах работает так же)
         self.part_classifier = nn.ModuleList([
             MarginClassifier(part_dim, num_classes, head, head_scale, head_margin) for _ in range(num_parts)
         ])
@@ -336,15 +281,6 @@ class PartReIDModel(nn.Module):
 
 
 def load_external_weights(model: nn.Module, path: str) -> None:
-    """Инициализация из внешнего ReID-чекпоинта (model.init_weights) - домен-претрейн.
-
-    Поддерживаются:
-      - fast-reid (JDAI-CV/fast-reid model zoo, напр. veri_sbs_R50-ibn.pth, обучен на VeRi-776):
-        backbone.* -> backbone.* (имена IBN-слоёв совпадают), heads.bottleneck.0.* -> bottleneck.*,
-        heads.pool_layer.p -> gap.p (GeM). Non-local блоки (NL_*) и классификатор пропускаются.
-      - наши собственные чекпоинты (ключи 1:1), классификаторы пропускаются (другое число классов).
-    Грузится всё, что совпало по имени и форме; сколько - в логе.
-    """
     sd = torch.load(path, map_location="cpu", weights_only=False)
     sd = sd.get("model", sd)
     mapped = {}
@@ -375,15 +311,6 @@ def load_external_weights(model: nn.Module, path: str) -> None:
 
 
 def build_model(model_cfg: dict, num_classes: int, pretrained: bool) -> nn.Module:
-    """Единая точка сборки модели по секции model конфига (train.py / infer.py / app.py).
-
-    Значения по умолчанию (last_stride=2, pooling=avg, num_parts=0) соответствуют
-    поведению до появления этих опций, поэтому старые конфиги/чекпоинты грузятся как раньше.
-    pretrained=True + model.init_weights: ImageNet-претрейн не качается, backbone/neck
-    инициализируются из внешнего ReID-чекпоинта (см. load_external_weights).
-    Атрибуты model.input_mean / input_std - нормализация входа для transforms
-    (ImageNet по умолчанию, у timm-backbone'ов - из их pretrained_cfg).
-    """
     init_weights = model_cfg.get("init_weights")
     common = dict(
         backbone=model_cfg["backbone"],
@@ -393,7 +320,7 @@ def build_model(model_cfg: dict, num_classes: int, pretrained: bool) -> nn.Modul
         head=model_cfg.get("head", "linear"),
         head_scale=float(model_cfg.get("head_scale", 30.0)),
         head_margin=float(model_cfg.get("head_margin", 0.3)),
-        img_size=model_cfg.get("img_size"),     # для ViT: если вход не равен родному разрешению
+        img_size=model_cfg.get("img_size"),
     )
     num_parts = int(model_cfg.get("num_parts", 0))
     if num_parts > 0:

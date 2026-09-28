@@ -4,7 +4,6 @@ import numpy as np
 def compute_cmc_map(query_feat: np.ndarray, gallery_feat: np.ndarray,
                      query_ids: np.ndarray, gallery_ids: np.ndarray,
                      ranks=(1, 5, 10)):
-    """CMC@rank и mAP для внутренней валидации (открытый набор идентичностей)."""
     qf = query_feat / np.clip(np.linalg.norm(query_feat, axis=1, keepdims=True), 1e-12, None)
     gf = gallery_feat / np.clip(np.linalg.norm(gallery_feat, axis=1, keepdims=True), 1e-12, None)
     sim = qf @ gf.T

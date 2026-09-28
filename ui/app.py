@@ -1,10 +1,3 @@
-"""Веб-интерфейс сервиса (тонкий клиент): точка входа и навигация.
-
-Логики здесь нет — страницы обращаются к backend по HTTP. Названия файлов латиницей,
-заголовки в меню задаются явно через st.Page.
-
-Запуск: streamlit run service/ui/app.py   (или python service/run_local.py — поднимет и backend)
-"""
 import os
 import sys
 

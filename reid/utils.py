@@ -46,7 +46,14 @@ def save_checkpoint(state: dict, path: str) -> None:
     torch.save(state, path)
 
 
+WEIGHTS_URL = "https://disk.yandex.ru/client/disk/LCT"
+
+
 def load_checkpoint(path: str, map_location=None) -> dict:
-    # weights_only=False: чекпоинты - свои же файлы (модель+optimizer+метрики,
-    # metrics могут содержать numpy-скаляры), torch>=2.6 иначе блокирует их unpickle
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"не найден файл весов: {path}\n"
+            f"Весов нет в репозитории - скачайте их и положите в каталог weights/:\n"
+            f"  {WEIGHTS_URL}\n"
+            f"Нужны оба файла: bestv10_512.pth и r101_ibn_256.pth (по 92 МБ).")
     return torch.load(path, map_location=map_location, weights_only=False)
